@@ -1,3 +1,4 @@
+import asyncio
 import logging
 import uuid
 from datetime import datetime, timezone
@@ -8,7 +9,14 @@ from sqlalchemy.orm import Session
 from app.core.config import settings
 from app.worker.celery_app import celery_app
 from app.services.ai_adapters import get_adapter
-from app.services.quota import enforce_quota, QuotaExceededError
+from app.services.quota import (
+    enforce_quota,
+    QuotaExceededError,
+    PLAN_MONTHLY_LIMITS,
+    get_monthly_usage,
+    get_monthly_cost_usd,
+    is_approaching_quota,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -165,13 +173,12 @@ def run_project_query(self, project_id: str, prompt_text: str, engine: str):
 def check_daily_api_costs():
     """Check yesterday's total API spend and send alert if over threshold."""
     from app.models.prompt_result import PromptResult
-    from app.services.email import send_email
+    from app.services.email import _send_email
 
     db = _get_sync_db()
     try:
         now = datetime.now(timezone.utc)
         today_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
-        # Simple yesterday: subtract one day
         yesterday_start = datetime(
             today_start.year, today_start.month, today_start.day - 1,
             tzinfo=timezone.utc,
@@ -190,18 +197,65 @@ def check_daily_api_costs():
 
         alert_sent = False
         if total_cost >= threshold and settings.cost_alert_email:
-            send_email(
+            asyncio.run(_send_email(
                 to_email=settings.cost_alert_email,
                 subject=f"[GEOCopilot] API cost alert: ${total_cost:.2f} yesterday",
-                html_content=(
+                html=(
                     f"<p>Yesterday's AI API spend was <strong>${total_cost:.4f}</strong>, "
                     f"exceeding the configured threshold of <strong>${threshold}</strong>.</p>"
                     f"<p>Review usage in Flower or your AI provider dashboards.</p>"
                 ),
-            )
+            ))
             logger.warning(f"Cost alert sent: ${total_cost:.4f} >= ${threshold}")
             alert_sent = True
 
         return {"yesterday_cost_usd": total_cost, "alert_sent": alert_sent}
+    finally:
+        db.close()
+
+
+# ─── Per-user quota alert task ─────────────────────────────────────────────────
+
+@celery_app.task(name="app.worker.tasks.query_runner.check_user_quota_alerts")
+def check_user_quota_alerts():
+    """Warn users who have consumed >= 80% of their monthly query quota."""
+    from app.models.user import User
+    from app.models.project import Project
+    from app.services.email import send_quota_warning_email
+
+    db = _get_sync_db()
+    try:
+        # Find all users with at least one active project
+        user_ids = db.execute(
+            select(Project.user_id).where(Project.status == "active").distinct()
+        ).scalars().all()
+
+        alerts_sent = 0
+        checked = 0
+        for user_id in user_ids:
+            user = db.execute(select(User).where(User.id == user_id)).scalar_one_or_none()
+            if not user or not user.is_active:
+                continue
+            checked += 1
+            plan = user.plan or "free"
+            limit = PLAN_MONTHLY_LIMITS.get(plan, PLAN_MONTHLY_LIMITS["free"])
+            used = get_monthly_usage(db, user_id)
+            if is_approaching_quota(used, limit):
+                cost_usd = get_monthly_cost_usd(db, user_id)
+                asyncio.run(send_quota_warning_email(
+                    email=user.email,
+                    name=user.full_name,
+                    used=used,
+                    limit=limit,
+                    plan=plan,
+                    cost_usd=cost_usd,
+                ))
+                logger.warning(
+                    f"Quota warning sent user={user_id} used={used}/{limit} plan={plan}"
+                )
+                alerts_sent += 1
+
+        logger.info(f"Quota alert check done: checked={checked} alerts_sent={alerts_sent}")
+        return {"checked": checked, "alerts_sent": alerts_sent}
     finally:
         db.close()

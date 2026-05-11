@@ -28,5 +28,9 @@ celery_app.conf.update(
             "task": "app.worker.tasks.query_runner.check_daily_api_costs",
             "schedule": 86400.0,  # every 24 hours
         },
+        "check-user-quota-alerts": {
+            "task": "app.worker.tasks.query_runner.check_user_quota_alerts",
+            "schedule": 3600.0,  # every hour — catches quota approach without delay
+        },
     },
 )
