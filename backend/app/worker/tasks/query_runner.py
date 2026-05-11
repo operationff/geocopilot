@@ -151,6 +151,15 @@ def run_project_query(self, project_id: str, prompt_text: str, engine: str):
 
         db.commit()
         logger.info(f"Stored result {prompt_result.id} for project={project_id} engine={engine}")
+
+        # Invalidate dashboard cache so the next GET recomputes fresh stats
+        try:
+            import redis as _redis_sync
+            r = _redis_sync.from_url(settings.redis_url, decode_responses=True)
+            r.delete(f"dashboard:{project_id}")
+        except Exception as cache_err:
+            logger.warning(f"Cache invalidation failed for project={project_id}: {cache_err}")
+
         return {
             "result_id": str(prompt_result.id),
             "brand_mentioned": result.brand_mentioned,

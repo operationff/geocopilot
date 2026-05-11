@@ -493,20 +493,23 @@ const TREND_ICON = {
 };
 
 function VisibilityScoreCard({ stats, loading, onRefresh }) {
-  const score = stats?.overall_visibility;
+  const score = stats?.overall?.current?.score ?? null;
   const trend = stats?.trend;
-  const delta = stats?.trend_delta;
+  const delta = stats?.overall?.trend_delta ?? null;
+  const resultCount = stats?.overall?.current?.result_count ?? null;
+  const citationCount = stats?.overall?.current?.citation_count ?? null;
+  const computedAt = stats?.computed_at;
 
   return (
     <div className="bg-white rounded-2xl border border-gray-100 shadow-sm p-6">
       <div className="flex items-start justify-between mb-2">
         <div>
           <h3 className="text-base font-semibold text-gray-900">Brand Visibility Score</h3>
-          <p className="text-xs text-gray-400 mt-0.5">Average across all AI engine scans</p>
+          <p className="text-xs text-gray-400 mt-0.5">% of AI responses that mention your brand (last 7 days)</p>
         </div>
         <div className="flex items-center gap-2">
-          {stats?.last_updated_at && (
-            <span className="text-xs text-gray-400">Updated {fmtRelTime(stats.last_updated_at)}</span>
+          {computedAt && (
+            <span className="text-xs text-gray-400">Updated {fmtRelTime(computedAt)}</span>
           )}
           {loading && (
             <span className="w-3 h-3 rounded-full border-2 border-brand-400 border-t-transparent animate-spin inline-block" />
@@ -532,8 +535,8 @@ function VisibilityScoreCard({ stats, loading, onRefresh }) {
           <div className="flex items-center gap-1.5 mb-1">
             {TREND_ICON[trend]}
             <span className={`text-sm font-medium ${trend === "up" ? "text-green-600" : trend === "down" ? "text-red-500" : "text-gray-400"}`}>
-              {delta !== null && delta !== undefined
-                ? `${delta > 0 ? "+" : ""}${Math.round(delta * 100)}% vs last 7d`
+              {delta !== null
+                ? `${delta > 0 ? "+" : ""}${Math.round(delta * 100)}pp vs prior 7d`
                 : trend}
             </span>
           </div>
@@ -542,18 +545,18 @@ function VisibilityScoreCard({ stats, loading, onRefresh }) {
 
       <div className="grid grid-cols-3 gap-4 mt-6 pt-4 border-t border-gray-50">
         <div>
-          <p className="text-xs text-gray-400">Total scans</p>
-          <p className="text-lg font-semibold text-gray-800 mt-0.5">{stats?.total_scans ?? "—"}</p>
+          <p className="text-xs text-gray-400">Scans (7d)</p>
+          <p className="text-lg font-semibold text-gray-800 mt-0.5">{resultCount ?? "—"}</p>
         </div>
         <div>
-          <p className="text-xs text-gray-400">Citations</p>
-          <p className="text-lg font-semibold text-gray-800 mt-0.5">{stats?.citation_summary?.total ?? "—"}</p>
+          <p className="text-xs text-gray-400">Citations (7d)</p>
+          <p className="text-lg font-semibold text-gray-800 mt-0.5">{citationCount ?? "—"}</p>
         </div>
         <div>
-          <p className="text-xs text-gray-400">Brand cited</p>
+          <p className="text-xs text-gray-400">Prior 7d score</p>
           <p className="text-lg font-semibold text-gray-800 mt-0.5">
-            {stats?.citation_summary?.brand_citation_rate !== null && stats?.citation_summary?.brand_citation_rate !== undefined
-              ? `${Math.round(stats.citation_summary.brand_citation_rate * 100)}%`
+            {stats?.overall?.previous?.score !== undefined
+              ? fmtScore(stats.overall.previous.score)
               : "—"}
           </p>
         </div>
@@ -582,11 +585,9 @@ function EngineBreakdownCard({ stats }) {
       ) : (
         <div className="space-y-3">
           {entries.map(([engine, engineStats]) => {
-            const score = engineStats.avg_score;
+            const score = engineStats.current?.score ?? null;
             const pct = score !== null ? Math.round(score * 100) : null;
-            const mentionRate = engineStats.scan_count > 0
-              ? engineStats.brand_mentioned_count / engineStats.scan_count
-              : 0;
+            const delta = engineStats.trend_delta;
 
             return (
               <div key={engine} className="flex items-center gap-4">
@@ -594,7 +595,9 @@ function EngineBreakdownCard({ stats }) {
                   <p className="text-sm font-medium text-gray-700 truncate">
                     {ENGINE_LABELS[engine] || engine}
                   </p>
-                  <p className="text-xs text-gray-400">{engineStats.scan_count} scans</p>
+                  <p className="text-xs text-gray-400">
+                    {engineStats.current?.result_count ?? 0} scans
+                  </p>
                 </div>
                 <div className="flex-1">
                   <div className="h-2 bg-gray-100 rounded-full overflow-hidden">
@@ -605,9 +608,11 @@ function EngineBreakdownCard({ stats }) {
                       style={{ width: pct !== null ? `${pct}%` : "0%" }}
                     />
                   </div>
-                  <p className="text-xs text-gray-400 mt-0.5">
-                    {Math.round(mentionRate * 100)}% brand mentioned
-                  </p>
+                  {delta !== null && delta !== undefined && (
+                    <p className={`text-xs mt-0.5 ${delta > 0.01 ? "text-green-500" : delta < -0.01 ? "text-red-400" : "text-gray-400"}`}>
+                      {delta > 0 ? "+" : ""}{Math.round(delta * 100)}pp vs prior 7d
+                    </p>
+                  )}
                 </div>
                 <div className={`text-sm font-bold w-12 text-right shrink-0 ${scoreColor(score)}`}>
                   {fmtScore(score)}
@@ -621,66 +626,104 @@ function EngineBreakdownCard({ stats }) {
   );
 }
 
+// ─── Prompt tracking card ─────────────────────────────────────────────────────
+
+function PromptTrackingCard({ stats }) {
+  const byPrompt = stats?.by_prompt ?? [];
+
+  return (
+    <SectionCard title="Prompt Tracking">
+      {byPrompt.length === 0 ? (
+        <p className="text-sm text-gray-400">No prompt data yet. Run some scans to see per-prompt visibility.</p>
+      ) : (
+        <div className="space-y-3">
+          {byPrompt.slice(0, 8).map((p) => {
+            const score = p.current?.score ?? null;
+            const pct = score !== null ? Math.round(score * 100) : 0;
+            const delta = p.trend_delta;
+
+            return (
+              <div key={p.prompt_text} className="flex items-start gap-4">
+                <div className="flex-1 min-w-0">
+                  <p className="text-sm text-gray-700 truncate" title={p.prompt_text}>
+                    {p.prompt_text}
+                  </p>
+                  <div className="flex items-center gap-3 mt-1">
+                    <div className="flex-1 h-1.5 bg-gray-100 rounded-full overflow-hidden">
+                      <div
+                        className={`h-1.5 rounded-full ${pct >= 70 ? "bg-green-400" : pct >= 40 ? "bg-yellow-400" : "bg-red-300"}`}
+                        style={{ width: `${pct}%` }}
+                      />
+                    </div>
+                    {delta !== null && delta !== undefined && Math.abs(delta) >= 0.01 && (
+                      <span className={`text-xs shrink-0 ${delta > 0 ? "text-green-500" : "text-red-400"}`}>
+                        {delta > 0 ? "↑" : "↓"}{Math.abs(Math.round(delta * 100))}pp
+                      </span>
+                    )}
+                  </div>
+                </div>
+                <div className={`text-sm font-bold shrink-0 ${scoreColor(score)}`}>
+                  {fmtScore(score)}
+                </div>
+              </div>
+            );
+          })}
+          {byPrompt.length > 8 && (
+            <p className="text-xs text-gray-400 pt-1">+{byPrompt.length - 8} more prompts tracked</p>
+          )}
+        </div>
+      )}
+    </SectionCard>
+  );
+}
+
 // ─── Competitor gap card ──────────────────────────────────────────────────────
 
 function CompetitorGapCard({ stats }) {
   const gaps = stats?.competitor_gap ?? [];
+  const maxCitations = gaps.length > 0 ? Math.max(...gaps.map((g) => g.citation_count), 1) : 1;
 
   return (
     <SectionCard title="Competitor Gap Analysis">
       {gaps.length === 0 ? (
         <p className="text-sm text-gray-400">
-          Add competitors to see how often they appear alongside your brand in AI results.
+          Add competitors to see how often they appear in AI citations.
         </p>
       ) : (
-        <div className="space-y-4">
+        <div className="space-y-3">
           <p className="text-xs text-gray-400">
-            How often each competitor is cited in AI responses where your brand was also scanned.
+            Citation count in AI responses across all scans.
           </p>
-          {gaps.map((gap) => (
-            <div key={gap.website_url} className="flex items-center gap-4">
-              <div className="w-36 shrink-0">
-                <p className="text-sm font-medium text-gray-700 truncate">{gap.name}</p>
-                <a
-                  href={gap.website_url}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="text-xs text-gray-400 hover:text-brand-500 truncate block"
-                >
-                  {gap.website_url.replace(/^https?:\/\/(www\.)?/, "")}
-                </a>
-              </div>
-              <div className="flex-1">
-                <div className="flex gap-1 items-center">
-                  <span className="text-xs text-gray-500 w-24">Cited</span>
-                  <span className="text-sm font-semibold text-gray-800">{gap.citation_count}</span>
-                  <span className="text-xs text-gray-400 ml-1">times</span>
+          {gaps.map((gap) => {
+            const barPct = Math.round((gap.citation_count / maxCitations) * 100);
+            return (
+              <div key={gap.website_url} className="flex items-center gap-4">
+                <div className="w-32 shrink-0">
+                  <p className="text-sm font-medium text-gray-700 truncate">{gap.name}</p>
+                  <a
+                    href={gap.website_url}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="text-xs text-gray-400 hover:text-brand-500 truncate block"
+                  >
+                    {gap.website_url.replace(/^https?:\/\/(www\.)?/, "")}
+                  </a>
                 </div>
-                <div className="flex gap-1 items-center mt-0.5">
-                  <span className="text-xs text-gray-500 w-24">+ Your brand</span>
-                  <span className={`text-sm font-semibold ${gap.brand_citation_count > 0 ? "text-green-600" : "text-gray-400"}`}>
-                    {gap.brand_citation_count}
-                  </span>
-                  <span className="text-xs text-gray-400 ml-1">co-mentions</span>
+                <div className="flex-1">
+                  <div className="h-2 bg-gray-100 rounded-full overflow-hidden">
+                    <div
+                      className="h-2 bg-orange-300 rounded-full transition-all"
+                      style={{ width: `${barPct}%` }}
+                    />
+                  </div>
+                </div>
+                <div className="text-sm font-semibold text-gray-700 w-12 text-right shrink-0">
+                  {gap.citation_count}
+                  <span className="text-xs font-normal text-gray-400 ml-0.5">cit.</span>
                 </div>
               </div>
-              <div
-                className={`shrink-0 px-2.5 py-1 rounded-full text-xs font-medium ${
-                  gap.citation_count === 0
-                    ? "bg-gray-100 text-gray-400"
-                    : gap.brand_citation_count >= gap.citation_count / 2
-                    ? "bg-green-50 text-green-700"
-                    : "bg-orange-50 text-orange-600"
-                }`}
-              >
-                {gap.citation_count === 0
-                  ? "No data"
-                  : gap.brand_citation_count >= gap.citation_count / 2
-                  ? "Competing well"
-                  : "Gap detected"}
-              </div>
-            </div>
-          ))}
+            );
+          })}
         </div>
       )}
     </SectionCard>
@@ -861,7 +904,7 @@ export default function Dashboard() {
   const fetchStats = useCallback(async (projectId) => {
     setStatsLoading(true);
     try {
-      const { data } = await api.get(`/api/projects/${projectId}/dashboard-stats/`);
+      const { data } = await api.get(`/api/projects/${projectId}/dashboard`);
       setStats(data);
     } catch {
       // silently fail — stats are non-critical
@@ -970,6 +1013,11 @@ export default function Dashboard() {
             <div className="grid grid-cols-1 md:grid-cols-2 gap-6 mb-6">
               <EngineBreakdownCard stats={stats} />
               <CompetitorGapCard stats={stats} />
+            </div>
+
+            {/* Prompt tracking */}
+            <div className="mb-6">
+              <PromptTrackingCard stats={stats} />
             </div>
 
             {/* Config cards */}
