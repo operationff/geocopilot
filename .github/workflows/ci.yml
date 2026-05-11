@@ -1,0 +1,112 @@
+name: CI
+
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+    branches: [main]
+
+jobs:
+  backend-test:
+    name: Backend Tests
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: postgres:15
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: geocopilot_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 5
+
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 5
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+          cache: pip
+          cache-dependency-path: backend/requirements.txt
+
+      - name: Install dependencies
+        working-directory: backend
+        run: pip install -r requirements.txt
+
+      - name: Lint
+        working-directory: backend
+        run: ruff check .
+
+      - name: Run migrations
+        working-directory: backend
+        env:
+          DATABASE_URL: postgresql+asyncpg://postgres:postgres@localhost:5432/geocopilot_test
+          DATABASE_URL_SYNC: postgresql://postgres:postgres@localhost:5432/geocopilot_test
+        run: alembic upgrade head
+
+      - name: Run tests
+        working-directory: backend
+        env:
+          DATABASE_URL: postgresql+asyncpg://postgres:postgres@localhost:5432/geocopilot_test
+          DATABASE_URL_SYNC: postgresql://postgres:postgres@localhost:5432/geocopilot_test
+          REDIS_URL: redis://localhost:6379/0
+          CELERY_BROKER_URL: redis://localhost:6379/1
+          CELERY_RESULT_BACKEND: redis://localhost:6379/2
+          SECRET_KEY: test-secret-key-ci
+          ENVIRONMENT: test
+        run: pytest tests/ -v --cov=app --cov-report=term-missing
+
+  frontend-test:
+    name: Frontend Build
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install dependencies
+        working-directory: frontend
+        run: npm ci
+
+      - name: Build
+        working-directory: frontend
+        env:
+          VITE_API_URL: http://localhost:8000
+        run: npm run build
+
+  deploy-staging:
+    name: Deploy to Staging
+    needs: [backend-test, frontend-test]
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/main'
+    environment: staging
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Deploy backend to staging
+        run: echo "TODO — wire to VPS deploy script or Render/Railway"
+
+      - name: Deploy frontend to staging
+        run: echo "TODO — wire to CDN deploy or Vercel staging"
