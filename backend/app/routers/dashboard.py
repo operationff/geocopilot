@@ -54,6 +54,15 @@ class CompetitorGap(BaseModel):
     citation_count: int
 
 
+class CitationEntry(BaseModel):
+    url: str
+    title: str | None
+    domain: str | None
+    prompt_text: str
+    engine: str
+    cited_at: datetime
+
+
 class DashboardResponse(BaseModel):
     project_id: uuid.UUID
     computed_at: datetime
@@ -62,6 +71,7 @@ class DashboardResponse(BaseModel):
     by_engine: dict[str, EngineStats]
     by_prompt: list[PromptStats]
     competitor_gap: list[CompetitorGap]
+    citations: list[CitationEntry]
 
 
 # ── Auth helper ───────────────────────────────────────────────────────────────
@@ -89,6 +99,41 @@ def _trend_label(delta: float) -> str | None:
     if abs(delta) < 0.02:
         return "stable"
     return "up" if delta > 0 else "down"
+
+
+# ── Brand citations (top 20 most recent, brand domain only) ──────────────────
+
+async def _brand_citations(
+    project_id: uuid.UUID, db: AsyncSession
+) -> list[CitationEntry]:
+    rows = await db.execute(
+        select(
+            Citation.url,
+            Citation.title,
+            Citation.domain,
+            PromptResult.prompt_text,
+            PromptResult.engine,
+            PromptResult.queried_at,
+        )
+        .join(PromptResult, PromptResult.id == Citation.prompt_result_id)
+        .where(
+            PromptResult.project_id == project_id,
+            Citation.is_brand_domain.is_(True),
+        )
+        .order_by(PromptResult.queried_at.desc())
+        .limit(20)
+    )
+    return [
+        CitationEntry(
+            url=r.url,
+            title=r.title,
+            domain=r.domain,
+            prompt_text=r.prompt_text,
+            engine=r.engine if isinstance(r.engine, str) else r.engine.value,
+            cited_at=r.queried_at,
+        )
+        for r in rows
+    ]
 
 
 # ── Competitor gap (separate efficient query) ─────────────────────────────────
@@ -128,7 +173,7 @@ async def _competitor_gap(
 
 # ── Serialization helpers ─────────────────────────────────────────────────────
 
-def _stats_to_dict(stats, competitor_gap: list[CompetitorGap]) -> dict:
+def _stats_to_dict(stats, competitor_gap: list[CompetitorGap], citations: list[CitationEntry]) -> dict:
     def period(p):
         return {"score": p.score, "result_count": p.result_count, "citation_count": p.citation_count}
 
@@ -153,6 +198,17 @@ def _stats_to_dict(stats, competitor_gap: list[CompetitorGap]) -> dict:
         "competitor_gap": [
             {"name": g.name, "website_url": g.website_url, "citation_count": g.citation_count}
             for g in competitor_gap
+        ],
+        "citations": [
+            {
+                "url": c.url,
+                "title": c.title,
+                "domain": c.domain,
+                "prompt_text": c.prompt_text,
+                "engine": c.engine,
+                "cited_at": c.cited_at.isoformat(),
+            }
+            for c in citations
         ],
     }
 
@@ -179,7 +235,8 @@ async def get_dashboard(
 
     stats = await compute_dashboard_stats(db, project_id)
     gap = await _competitor_gap(project_id, db)
-    payload = _stats_to_dict(stats, gap)
+    citations = await _brand_citations(project_id, db)
+    payload = _stats_to_dict(stats, gap, citations)
     await redis.set(cache_key, json.dumps(payload), ex=_CACHE_TTL)
 
     return DashboardResponse.model_validate(payload)

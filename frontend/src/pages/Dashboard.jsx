@@ -730,6 +730,54 @@ function CompetitorGapCard({ stats }) {
   );
 }
 
+// ─── Citation tracking card ───────────────────────────────────────────────────
+
+function CitationTrackingCard({ stats }) {
+  const citations = stats?.citations ?? [];
+
+  return (
+    <SectionCard title="Citation Tracking">
+      {citations.length === 0 ? (
+        <p className="text-sm text-gray-400">
+          No brand citations yet. Run scans to see where AI engines cite your brand.
+        </p>
+      ) : (
+        <div className="space-y-3">
+          <p className="text-xs text-gray-400">
+            URLs where your brand was cited in AI responses (most recent first).
+          </p>
+          {citations.map((c, i) => (
+            <div key={i} className="flex items-start gap-3 py-2.5 border-b border-gray-50 last:border-0">
+              <div className="flex-1 min-w-0">
+                <a
+                  href={c.url}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="text-sm font-medium text-brand-600 hover:underline truncate block"
+                  title={c.url}
+                >
+                  {c.title || c.domain || c.url}
+                </a>
+                <div className="flex items-center gap-2 mt-0.5">
+                  <span className="text-xs text-gray-400 truncate" title={c.prompt_text}>
+                    "{c.prompt_text.length > 60 ? c.prompt_text.slice(0, 60) + "…" : c.prompt_text}"
+                  </span>
+                </div>
+              </div>
+              <div className="shrink-0 flex flex-col items-end gap-1">
+                <span className="text-xs bg-gray-100 text-gray-500 px-2 py-0.5 rounded-full">
+                  {ENGINE_LABELS[c.engine] || c.engine}
+                </span>
+                <span className="text-xs text-gray-400">{fmtRelTime(c.cited_at)}</span>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+    </SectionCard>
+  );
+}
+
 // ─── GEO scan + results card ──────────────────────────────────────────────────
 
 const ENGINE_OPTIONS = Object.entries(ENGINE_LABELS);
@@ -1018,6 +1066,11 @@ export default function Dashboard() {
             {/* Prompt tracking */}
             <div className="mb-6">
               <PromptTrackingCard stats={stats} />
+            </div>
+
+            {/* Citation tracking */}
+            <div className="mb-6">
+              <CitationTrackingCard stats={stats} />
             </div>
 
             {/* Config cards */}
