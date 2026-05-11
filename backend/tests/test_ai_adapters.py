@@ -1,9 +1,10 @@
-"""Unit tests for AI adapter interface, ChatGPT adapter, and Perplexity adapter."""
+"""Unit tests for AI adapter interface, ChatGPT adapter, Perplexity adapter, and Gemini adapter."""
 import pytest
 from unittest.mock import MagicMock, patch
 
 from app.services.ai_adapters.base import AIAdapterBase, AdapterResult
 from app.services.ai_adapters.chatgpt import ChatGPTAdapter, _extract_brand_mentions
+from app.services.ai_adapters.gemini import GeminiAdapter, _extract_brand_mentions as _gemini_extract
 from app.services.ai_adapters.perplexity import PerplexityAdapter, _extract_brand_mentions as _perp_extract
 
 
@@ -270,3 +271,124 @@ def test_perplexity_adapter_passes_prompt_as_user_message(mock_openai_cls):
     assert len(messages) == 1
     assert messages[0]["role"] == "user"
     assert messages[0]["content"] == "Best project management tools?"
+
+
+# ---------------------------------------------------------------------------
+# GeminiAdapter with mocked google.generativeai
+# ---------------------------------------------------------------------------
+
+def _make_gemini_response(text: str):
+    response = MagicMock()
+    response.text = text
+    return response
+
+
+@patch("app.services.ai_adapters.gemini.genai")
+def test_gemini_adapter_brand_mentioned(mock_genai):
+    mock_model = MagicMock()
+    mock_genai.GenerativeModel.return_value = mock_model
+    mock_model.generate_content.return_value = _make_gemini_response(
+        "There are several solutions available. Acme Corp is one of the best options. "
+        "It has strong market presence."
+    )
+
+    adapter = GeminiAdapter(api_key="test-key")
+    result = adapter.query("What are the best solutions?", "Acme Corp")
+
+    assert result.brand_mentioned is True
+    assert result.mention_position == 2
+    assert len(result.mention_context) == 1
+    assert "Acme Corp" in result.mention_context[0]
+    assert isinstance(result, AdapterResult)
+
+
+@patch("app.services.ai_adapters.gemini.genai")
+def test_gemini_adapter_brand_not_mentioned(mock_genai):
+    mock_model = MagicMock()
+    mock_genai.GenerativeModel.return_value = mock_model
+    mock_model.generate_content.return_value = _make_gemini_response(
+        "There are many options. You should consider multiple vendors. Research carefully."
+    )
+
+    adapter = GeminiAdapter(api_key="test-key")
+    result = adapter.query("What are the best solutions?", "Acme Corp")
+
+    assert result.brand_mentioned is False
+    assert result.mention_position is None
+    assert result.mention_context == []
+
+
+@patch("app.services.ai_adapters.gemini.genai")
+def test_gemini_adapter_case_insensitive(mock_genai):
+    mock_model = MagicMock()
+    mock_genai.GenerativeModel.return_value = mock_model
+    mock_model.generate_content.return_value = _make_gemini_response(
+        "First sentence. acme corp appears here. End."
+    )
+
+    adapter = GeminiAdapter(api_key="test-key")
+    result = adapter.query("prompt", "Acme Corp")
+
+    assert result.brand_mentioned is True
+    assert result.mention_position == 2
+
+
+@patch("app.services.ai_adapters.gemini.genai")
+def test_gemini_adapter_multiple_mentions(mock_genai):
+    mock_model = MagicMock()
+    mock_genai.GenerativeModel.return_value = mock_model
+    mock_model.generate_content.return_value = _make_gemini_response(
+        "Acme Corp leads the market. Others exist. Acme Corp has great support."
+    )
+
+    adapter = GeminiAdapter(api_key="test-key")
+    result = adapter.query("prompt", "Acme Corp")
+
+    assert result.brand_mentioned is True
+    assert result.mention_position == 1
+    assert len(result.mention_context) == 2
+
+
+@patch("app.services.ai_adapters.gemini.genai")
+def test_gemini_adapter_empty_response(mock_genai):
+    mock_model = MagicMock()
+    mock_genai.GenerativeModel.return_value = mock_model
+    mock_model.generate_content.return_value = _make_gemini_response(None)
+
+    adapter = GeminiAdapter(api_key="test-key")
+    result = adapter.query("prompt", "Brand")
+
+    assert result.raw_response == ""
+    assert result.brand_mentioned is False
+
+
+@patch("app.services.ai_adapters.gemini.genai")
+def test_gemini_adapter_uses_flash_model_by_default(mock_genai):
+    mock_model = MagicMock()
+    mock_genai.GenerativeModel.return_value = mock_model
+
+    GeminiAdapter(api_key="test-key")
+
+    mock_genai.GenerativeModel.assert_called_once_with("gemini-1.5-flash")
+
+
+@patch("app.services.ai_adapters.gemini.genai")
+def test_gemini_adapter_configures_api_key(mock_genai):
+    mock_model = MagicMock()
+    mock_genai.GenerativeModel.return_value = mock_model
+
+    GeminiAdapter(api_key="my-secret-key")
+
+    mock_genai.configure.assert_called_once_with(api_key="my-secret-key")
+
+
+@patch("app.services.ai_adapters.gemini.genai")
+def test_gemini_adapter_passes_prompt_to_generate_content(mock_genai):
+    mock_model = MagicMock()
+    mock_genai.GenerativeModel.return_value = mock_model
+    mock_model.generate_content.return_value = _make_gemini_response("ok")
+
+    adapter = GeminiAdapter(api_key="test-key")
+    adapter.query("Best CRM tools?", "Acme Corp")
+
+    mock_model.generate_content.assert_called_once_with("Best CRM tools?")
