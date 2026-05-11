@@ -53,6 +53,36 @@ def _get_sync_db() -> Session:
     return Session(engine)
 
 
+@celery_app.task(name="app.worker.tasks.query_runner.run_queries_for_project", bind=True, max_retries=3)
+def run_queries_for_project(self, project_id: str):
+    """On-demand: fan out queries for a single project across all AI engines."""
+    from app.models.project import Project
+    from app.models.brand import Brand
+    from app.models.prompt_result import AIEngine
+
+    logger.info(f"Starting on-demand query run for project={project_id}")
+    db = _get_sync_db()
+    try:
+        import uuid as _uuid
+        pid = _uuid.UUID(project_id)
+        project = db.execute(select(Project).where(Project.id == pid)).scalar_one_or_none()
+        if not project:
+            logger.warning(f"Project {project_id} not found")
+            return {"status": "project_not_found"}
+        brand = db.execute(select(Brand).where(Brand.project_id == pid)).scalar_one_or_none()
+        if not brand:
+            logger.warning(f"No brand found for project={project_id}")
+            return {"status": "no_brand"}
+        prompt = f"What are the best solutions for {brand.products_services or brand.description or brand.name}?"
+        dispatched = 0
+        for engine in [AIEngine.google_ai_overviews, AIEngine.chatgpt]:
+            run_project_query.delay(project_id, prompt, engine.value)
+            dispatched += 1
+        return {"status": "queries_dispatched", "count": dispatched}
+    finally:
+        db.close()
+
+
 @celery_app.task(name="app.worker.tasks.query_runner.run_scheduled_queries", bind=True, max_retries=3)
 def run_scheduled_queries(self):
     """Daily task: fan out per-project AI engine queries."""
