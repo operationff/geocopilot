@@ -11,7 +11,6 @@ _SENTENCE_SPLIT = re.compile(r"(?<=[.!?])\s+")
 
 
 def _extract_brand_mentions(text: str, brand_name: str) -> tuple[bool, int | None, list[str]]:
-    """Return (mentioned, position, context_sentences) for brand_name in text."""
     if not text or not brand_name:
         return False, None, []
 
@@ -46,9 +45,24 @@ class GeminiAdapter(AIAdapterBase):
         raw = response.text or ""
         mentioned, position, context = _extract_brand_mentions(raw, brand_name)
 
+        # Gemini 1.5 Flash pricing per 1M tokens
+        _INPUT_COST_PER_M = 0.075
+        _OUTPUT_COST_PER_M = 0.300
+        cost_usd: float | None = None
+        tokens_used: int | None = None
+        if hasattr(response, "usage_metadata") and response.usage_metadata:
+            meta = response.usage_metadata
+            inp = getattr(meta, "prompt_token_count", 0) or 0
+            out = getattr(meta, "candidates_token_count", 0) or 0
+            tokens_used = inp + out
+            cost_usd = round((inp * _INPUT_COST_PER_M + out * _OUTPUT_COST_PER_M) / 1_000_000, 6)
+
         return AdapterResult(
-            raw_response=raw,
+            raw_text=raw,
             brand_mentioned=mentioned,
             mention_position=position,
             mention_context=context,
+            model=self.model,
+            cost_usd=cost_usd,
+            tokens_used=tokens_used,
         )

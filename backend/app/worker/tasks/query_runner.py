@@ -1,51 +1,16 @@
 import logging
-import re
 import uuid
-from urllib.parse import urlparse
+from datetime import datetime, timezone
 
-import httpx
-from sqlalchemy import select, create_engine
+from sqlalchemy import select, func, create_engine
 from sqlalchemy.orm import Session
 
 from app.core.config import settings
 from app.worker.celery_app import celery_app
+from app.services.ai_adapters import get_adapter
+from app.services.quota import enforce_quota, QuotaExceededError
 
 logger = logging.getLogger(__name__)
-
-SERPAPI_BASE = "https://serpapi.com/search"
-
-
-def _extract_domain(url: str) -> str:
-    try:
-        return urlparse(url).netloc.lstrip("www.")
-    except Exception:
-        return ""
-
-
-def _detect_brand_mention(response_text: str, brand_name: str) -> tuple[bool, int | None]:
-    """Check if brand is mentioned and estimate position (sentence index)."""
-    if not response_text or not brand_name:
-        return False, None
-    pattern = re.compile(re.escape(brand_name), re.IGNORECASE)
-    sentences = re.split(r"[.!?]\s+", response_text)
-    for idx, sentence in enumerate(sentences):
-        if pattern.search(sentence):
-            return True, idx + 1
-    return False, None
-
-
-def _serp_search(prompt_text: str) -> dict:
-    """Call SerpAPI and return raw JSON."""
-    params = {
-        "q": prompt_text,
-        "api_key": settings.serp_api_key,
-        "engine": "google",
-        "num": 10,
-    }
-    with httpx.Client(timeout=30) as client:
-        resp = client.get(SERPAPI_BASE, params=params)
-        resp.raise_for_status()
-        return resp.json()
 
 
 def _get_sync_db() -> Session:
@@ -53,9 +18,17 @@ def _get_sync_db() -> Session:
     return Session(engine)
 
 
+def _get_user_plan(db: Session, user_id) -> str:
+    from app.models.user import User
+    user = db.execute(select(User).where(User.id == user_id)).scalar_one_or_none()
+    return user.plan if user else "free"
+
+
+# ─── Per-project on-demand runner ─────────────────────────────────────────────
+
 @celery_app.task(name="app.worker.tasks.query_runner.run_queries_for_project", bind=True, max_retries=3)
 def run_queries_for_project(self, project_id: str):
-    """On-demand: fan out queries for a single project across all AI engines."""
+    """Fan out queries for a single project across all AI engines."""
     from app.models.project import Project
     from app.models.brand import Brand
     from app.models.prompt_result import AIEngine
@@ -63,8 +36,7 @@ def run_queries_for_project(self, project_id: str):
     logger.info(f"Starting on-demand query run for project={project_id}")
     db = _get_sync_db()
     try:
-        import uuid as _uuid
-        pid = _uuid.UUID(project_id)
+        pid = uuid.UUID(project_id)
         project = db.execute(select(Project).where(Project.id == pid)).scalar_one_or_none()
         if not project:
             logger.warning(f"Project {project_id} not found")
@@ -73,9 +45,10 @@ def run_queries_for_project(self, project_id: str):
         if not brand:
             logger.warning(f"No brand found for project={project_id}")
             return {"status": "no_brand"}
+
         prompt = f"What are the best solutions for {brand.products_services or brand.description or brand.name}?"
         dispatched = 0
-        for engine in [AIEngine.google_ai_overviews, AIEngine.chatgpt, AIEngine.perplexity]:
+        for engine in [AIEngine.chatgpt, AIEngine.perplexity, AIEngine.gemini]:
             run_project_query.delay(project_id, prompt, engine.value)
             dispatched += 1
         return {"status": "queries_dispatched", "count": dispatched}
@@ -83,9 +56,11 @@ def run_queries_for_project(self, project_id: str):
         db.close()
 
 
+# ─── Daily scheduled runner ────────────────────────────────────────────────────
+
 @celery_app.task(name="app.worker.tasks.query_runner.run_scheduled_queries", bind=True, max_retries=3)
 def run_scheduled_queries(self):
-    """Daily task: fan out per-project AI engine queries."""
+    """Daily beat task: fan out per-project AI engine queries respecting quotas."""
     from app.models.project import Project
     from app.models.brand import Brand
     from app.models.prompt_result import AIEngine
@@ -95,122 +70,138 @@ def run_scheduled_queries(self):
     try:
         projects = db.execute(select(Project).where(Project.status == "active")).scalars().all()
         dispatched = 0
+        skipped_quota = 0
         for project in projects:
             brand = db.execute(select(Brand).where(Brand.project_id == project.id)).scalar_one_or_none()
             if not brand:
                 continue
+            try:
+                enforce_quota(db, project.user_id, _get_user_plan(db, project.user_id))
+            except QuotaExceededError as exc:
+                logger.warning(f"Quota exceeded for user={project.user_id} project={project.id}: {exc}")
+                skipped_quota += 1
+                continue
+
             prompt = f"What are the best solutions for {brand.products_services or brand.description or brand.name}?"
-            for engine in [AIEngine.google_ai_overviews, AIEngine.chatgpt, AIEngine.perplexity]:
+            for engine in [AIEngine.chatgpt, AIEngine.perplexity, AIEngine.gemini]:
                 run_project_query.delay(str(project.id), prompt, engine.value)
                 dispatched += 1
-        return {"status": "scheduled_queries_dispatched", "count": dispatched}
+        logger.info(f"Scheduled run complete: dispatched={dispatched} skipped_quota={skipped_quota}")
+        return {"status": "done", "dispatched": dispatched, "skipped_quota": skipped_quota}
     finally:
         db.close()
 
 
+# ─── Single query task ─────────────────────────────────────────────────────────
+
 @celery_app.task(name="app.worker.tasks.query_runner.run_project_query", bind=True, max_retries=3)
 def run_project_query(self, project_id: str, prompt_text: str, engine: str):
-    """Run a single AI engine query, analyze brand mention, store result."""
+    """Run a single AI engine query, detect brand mention, store result."""
     from app.models.brand import Brand
-    from app.models.competitor import Competitor
     from app.models.prompt_result import PromptResult, AIEngine
-    from app.models.citation import Citation
+    from app.models.project import Project
 
     logger.info(f"Running query project={project_id} engine={engine}")
     db = _get_sync_db()
     try:
         pid = uuid.UUID(project_id)
+        project = db.execute(select(Project).where(Project.id == pid)).scalar_one_or_none()
+        if not project:
+            return {"status": "project_not_found"}
+
+        plan = _get_user_plan(db, project.user_id)
+        try:
+            enforce_quota(db, project.user_id, plan)
+        except QuotaExceededError as exc:
+            logger.warning(f"Quota exceeded, skipping query: {exc}")
+            return {"status": "quota_exceeded", "detail": str(exc)}
+
         brand = db.execute(select(Brand).where(Brand.project_id == pid)).scalar_one_or_none()
-        competitors = db.execute(select(Competitor).where(Competitor.project_id == pid)).scalars().all()
+        brand_name = brand.name if brand else ""
 
-        brand_domain = _extract_domain(brand.website_url) if brand else ""
-        competitor_domains = {_extract_domain(c.website_url) for c in competitors}
+        adapter = get_adapter(engine)
+        result = adapter.query(prompt_text, brand_name)
 
-        engine_enum = AIEngine(engine)
-        organic: list = []
-        metadata: dict = {}
-
-        if engine_enum == AIEngine.chatgpt:
-            from app.services.ai_adapters.chatgpt import ChatGPTAdapter
-            adapter = ChatGPTAdapter(
-                api_key=settings.openai_api_key,
-                model=settings.openai_model,
-            )
-            result = adapter.query(prompt_text, brand.name if brand else "")
-            raw_response = result.raw_response
-            brand_mentioned = result.brand_mentioned
-            mention_position = result.mention_position
-            visibility_score = 1.0 if brand_mentioned else 0.0
-            metadata = {"mention_context": result.mention_context}
-        elif engine_enum == AIEngine.perplexity:
-            from app.services.ai_adapters.perplexity import PerplexityAdapter
-            adapter = PerplexityAdapter(
-                api_key=settings.perplexity_api_key,
-            )
-            result = adapter.query(prompt_text, brand.name if brand else "")
-            raw_response = result.raw_response
-            brand_mentioned = result.brand_mentioned
-            mention_position = result.mention_position
-            visibility_score = 1.0 if brand_mentioned else 0.0
-            metadata = {"mention_context": result.mention_context}
-        else:
-            serp_data = _serp_search(prompt_text)
-            organic = serp_data.get("organic_results", [])
-            ai_overview = serp_data.get("ai_overview", {})
-            raw_response = ai_overview.get("text_blocks_combined", "") if ai_overview else ""
-
-            brand_mentioned, mention_position = _detect_brand_mention(
-                raw_response, brand.name if brand else ""
-            )
-
-            total = len(organic)
-            brand_hits = sum(
-                1 for r in organic if brand_domain and brand_domain in _extract_domain(r.get("link", ""))
-            )
-            visibility_score = round(brand_hits / total, 4) if total > 0 else 0.0
-            metadata = {"serp_total_results": total}
+        # Visibility score: fraction of mention_context sentences vs total
+        total_context = len(result.mention_context)
+        visibility_score = round(total_context / max(total_context, 5), 4) if result.brand_mentioned else 0.0
 
         prompt_result = PromptResult(
             project_id=pid,
             prompt_text=prompt_text,
-            engine=engine_enum,
-            raw_response=raw_response or None,
-            brand_mentioned=brand_mentioned,
-            mention_position=mention_position,
+            engine=AIEngine(engine),
+            raw_response=result.raw_text or None,
+            brand_mentioned=result.brand_mentioned,
+            mention_position=result.mention_position,
             visibility_score=visibility_score,
-            metadata_=metadata,
+            api_cost_usd=result.cost_usd,
+            tokens_used=result.tokens_used,
+            metadata_={"mention_context": result.mention_context[:3]},
         )
         db.add(prompt_result)
         db.flush()
 
-        for pos, item in enumerate(organic, start=1):
-            url = item.get("link", "")
-            domain = _extract_domain(url)
-            citation = Citation(
-                prompt_result_id=prompt_result.id,
-                url=url,
-                title=item.get("title"),
-                snippet=item.get("snippet"),
-                domain=domain,
-                position=pos,
-                is_brand_domain=bool(brand_domain and brand_domain in domain),
-                is_competitor_domain=bool(domain in competitor_domains),
-            )
-            db.add(citation)
-
         db.commit()
-        logger.info(f"Stored result {prompt_result.id} for project={project_id}")
+        logger.info(f"Stored result {prompt_result.id} for project={project_id} engine={engine}")
         return {
             "result_id": str(prompt_result.id),
-            "brand_mentioned": brand_mentioned,
+            "brand_mentioned": result.brand_mentioned,
             "visibility_score": visibility_score,
+            "cost_usd": result.cost_usd,
         }
 
-    except httpx.HTTPStatusError as exc:
-        logger.error(f"SerpAPI HTTP error: {exc}")
-        raise self.retry(exc=exc, countdown=120)
+    except QuotaExceededError:
+        raise
     except Exception as exc:
-        logger.error(f"Query failed: {exc}")
+        logger.error(f"Query failed project={project_id} engine={engine}: {exc}")
         raise self.retry(exc=exc, countdown=60)
+    finally:
+        db.close()
+
+
+# ─── Cost monitoring task ──────────────────────────────────────────────────────
+
+@celery_app.task(name="app.worker.tasks.query_runner.check_daily_api_costs")
+def check_daily_api_costs():
+    """Check yesterday's total API spend and send alert if over threshold."""
+    from app.models.prompt_result import PromptResult
+    from app.services.email import send_email
+
+    db = _get_sync_db()
+    try:
+        now = datetime.now(timezone.utc)
+        today_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+        # Simple yesterday: subtract one day
+        yesterday_start = datetime(
+            today_start.year, today_start.month, today_start.day - 1,
+            tzinfo=timezone.utc,
+        ) if today_start.day > 1 else today_start  # edge: first of month, skip
+
+        total_cost = db.execute(
+            select(func.sum(PromptResult.api_cost_usd)).where(
+                PromptResult.queried_at >= yesterday_start,
+                PromptResult.queried_at < today_start,
+                PromptResult.api_cost_usd.isnot(None),
+            )
+        ).scalar_one_or_none() or 0.0
+
+        threshold = settings.daily_cost_alert_threshold_usd
+        logger.info(f"Yesterday AI API spend: ${total_cost:.4f} (threshold: ${threshold})")
+
+        alert_sent = False
+        if total_cost >= threshold and settings.cost_alert_email:
+            send_email(
+                to_email=settings.cost_alert_email,
+                subject=f"[GEOCopilot] API cost alert: ${total_cost:.2f} yesterday",
+                html_content=(
+                    f"<p>Yesterday's AI API spend was <strong>${total_cost:.4f}</strong>, "
+                    f"exceeding the configured threshold of <strong>${threshold}</strong>.</p>"
+                    f"<p>Review usage in Flower or your AI provider dashboards.</p>"
+                ),
+            )
+            logger.warning(f"Cost alert sent: ${total_cost:.4f} >= ${threshold}")
+            alert_sent = True
+
+        return {"yesterday_cost_usd": total_cost, "alert_sent": alert_sent}
     finally:
         db.close()

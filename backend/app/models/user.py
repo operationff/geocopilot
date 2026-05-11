@@ -22,6 +22,7 @@ class User(Base):
     verification_token: Mapped[str | None] = mapped_column(String(255), nullable=True)
     google_id: Mapped[str | None] = mapped_column(String(255), unique=True, nullable=True)
     avatar_url: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    plan: Mapped[str] = mapped_column(String(50), nullable=False, default="free")
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )

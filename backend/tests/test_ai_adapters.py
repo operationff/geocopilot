@@ -69,7 +69,7 @@ def test_base_adapter_concrete_subclass():
     class MyAdapter(AIAdapterBase):
         def query(self, prompt_text: str, brand_name: str) -> AdapterResult:
             return AdapterResult(
-                raw_response="test",
+                raw_text="test",
                 brand_mentioned=False,
                 mention_position=None,
             )
@@ -91,6 +91,7 @@ def _make_openai_response(content: str):
     choice.message = message
     response = MagicMock()
     response.choices = [choice]
+    response.usage = None  # disable cost calculation in tests
     return response
 
 
@@ -110,7 +111,7 @@ def test_chatgpt_adapter_brand_mentioned(mock_openai_cls):
     assert result.mention_position == 2
     assert len(result.mention_context) == 1
     assert "Acme Corp" in result.mention_context[0]
-    assert "Acme Corp is one of the best" in result.raw_response
+    assert "Acme Corp is one of the best" in result.raw_text
 
 
 @patch("app.services.ai_adapters.chatgpt.OpenAI")
@@ -166,7 +167,7 @@ def test_chatgpt_adapter_empty_response(mock_openai_cls):
     adapter = ChatGPTAdapter(api_key="test-key")
     result = adapter.query("prompt", "Brand")
 
-    assert result.raw_response == ""
+    assert result.raw_text == ""
     assert result.brand_mentioned is False
 
 
@@ -254,7 +255,7 @@ def test_perplexity_adapter_empty_response(mock_openai_cls):
     adapter = PerplexityAdapter(api_key="test-key")
     result = adapter.query("prompt", "Brand")
 
-    assert result.raw_response == ""
+    assert result.raw_text == ""
     assert result.brand_mentioned is False
 
 
@@ -280,6 +281,7 @@ def test_perplexity_adapter_passes_prompt_as_user_message(mock_openai_cls):
 def _make_gemini_response(text: str):
     response = MagicMock()
     response.text = text
+    response.usage_metadata = None  # disable cost calculation in tests
     return response
 
 
@@ -358,7 +360,7 @@ def test_gemini_adapter_empty_response(mock_genai):
     adapter = GeminiAdapter(api_key="test-key")
     result = adapter.query("prompt", "Brand")
 
-    assert result.raw_response == ""
+    assert result.raw_text == ""
     assert result.brand_mentioned is False
 
 

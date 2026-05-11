@@ -24,5 +24,9 @@ celery_app.conf.update(
             "task": "app.worker.tasks.query_runner.run_scheduled_queries",
             "schedule": 86400.0,  # every 24 hours
         },
+        "check-daily-api-costs": {
+            "task": "app.worker.tasks.query_runner.check_daily_api_costs",
+            "schedule": 86400.0,  # every 24 hours
+        },
     },
 )

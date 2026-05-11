@@ -2,12 +2,10 @@ import re
 import logging
 from openai import OpenAI
 
-from app.services.ai_adapters.base import AIAdapterBase, AdapterResult, CitationData
+from app.services.ai_adapters.base import AIAdapterBase, AdapterResult
 
 logger = logging.getLogger(__name__)
 
-_BASE_URL = "https://api.perplexity.ai"
-_DEFAULT_MODEL = "sonar"
 _SENTENCE_SPLIT = re.compile(r"(?<=[.!?])\s+")
 
 
@@ -29,62 +27,51 @@ def _extract_brand_mentions(text: str, brand_name: str) -> tuple[bool, int | Non
     return bool(context), first_position, context
 
 
-def _parse_citations(response) -> list[CitationData]:
-    """Extract grounded citations from a Perplexity sonar response."""
-    raw_citations = getattr(response, "citations", None)
-    if not raw_citations:
-        return []
-    result = []
-    for idx, item in enumerate(raw_citations, start=1):
-        if isinstance(item, str):
-            result.append(CitationData(url=item, position=idx))
-        elif isinstance(item, dict):
-            result.append(CitationData(
-                url=item.get("url", ""),
-                title=item.get("title"),
-                snippet=item.get("snippet"),
-                domain=item.get("domain"),
-                position=idx,
-            ))
-    return result
+class ChatGPTAdapter(AIAdapterBase):
+    """OpenAI ChatGPT adapter — sends a GEO visibility prompt and parses brand mentions."""
 
-
-class PerplexityAdapter(AIAdapterBase):
-    """Perplexity sonar adapter — sends a GEO visibility prompt and parses brand mentions."""
-
-    DEFAULT_MODEL = _DEFAULT_MODEL
+    DEFAULT_MODEL = "gpt-4o-mini"
+    SYSTEM_PROMPT = (
+        "You are a helpful assistant. Answer the user's question concisely and accurately. "
+        "Include relevant product or service recommendations when appropriate."
+    )
 
     def __init__(self, api_key: str, model: str = DEFAULT_MODEL):
-        self._client = OpenAI(api_key=api_key, base_url=_BASE_URL)
+        self._client = OpenAI(api_key=api_key)
         self.model = model
 
     def query(self, prompt_text: str, brand_name: str) -> AdapterResult:
-        logger.info(f"Perplexity query brand={brand_name!r} model={self.model}")
+        logger.info(f"ChatGPT query brand={brand_name!r} model={self.model}")
 
         response = self._client.chat.completions.create(
             model=self.model,
-            messages=[{"role": "user", "content": prompt_text}],
+            messages=[
+                {"role": "system", "content": self.SYSTEM_PROMPT},
+                {"role": "user", "content": prompt_text},
+            ],
+            temperature=0.3,
             max_tokens=1024,
         )
 
         raw = response.choices[0].message.content or ""
         mentioned, position, context = _extract_brand_mentions(raw, brand_name)
-        citations = _parse_citations(response)
 
-        # Perplexity sonar: ~$1/1M tokens (blended)
-        _COST_PER_M = 1.0
+        # gpt-4o-mini pricing per 1M tokens
+        _INPUT_COST_PER_M = 0.150
+        _OUTPUT_COST_PER_M = 0.600
         cost_usd: float | None = None
         tokens_used: int | None = None
         if response.usage:
-            tokens_used = response.usage.total_tokens or 0
-            cost_usd = round(tokens_used * _COST_PER_M / 1_000_000, 6)
+            inp = response.usage.prompt_tokens or 0
+            out = response.usage.completion_tokens or 0
+            tokens_used = inp + out
+            cost_usd = round((inp * _INPUT_COST_PER_M + out * _OUTPUT_COST_PER_M) / 1_000_000, 6)
 
         return AdapterResult(
             raw_text=raw,
             brand_mentioned=mentioned,
             mention_position=position,
             mention_context=context,
-            citations=citations,
             model=self.model,
             cost_usd=cost_usd,
             tokens_used=tokens_used,

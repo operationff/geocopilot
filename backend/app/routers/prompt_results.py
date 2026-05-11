@@ -40,6 +40,8 @@ class PromptResultResponse(BaseModel):
     brand_mentioned: bool | None
     mention_position: int | None
     visibility_score: float | None
+    api_cost_usd: float | None = None
+    tokens_used: int | None = None
     queried_at: datetime
     citations: list[CitationResponse] = []
 
@@ -73,6 +75,7 @@ async def list_prompt_results(
         select(PromptResult)
         .where(PromptResult.project_id == project_id)
         .order_by(PromptResult.queried_at.desc())
+        .options(selectinload(PromptResult.citations))
     )
     return result.scalars().all()
 
@@ -102,9 +105,9 @@ async def get_prompt_result(
 ):
     await _get_project(project_id, current_user, db)
     result = await db.execute(
-        select(PromptResult).where(
-            PromptResult.id == result_id, PromptResult.project_id == project_id
-        )
+        select(PromptResult)
+        .where(PromptResult.id == result_id, PromptResult.project_id == project_id)
+        .options(selectinload(PromptResult.citations))
     )
     prompt_result = result.scalar_one_or_none()
     if not prompt_result:
