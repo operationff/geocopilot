@@ -1,9 +1,39 @@
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 import { useAuth } from "../hooks/useAuth";
 import { useNavigate } from "react-router-dom";
 import api from "../lib/api";
 
-// ─── Sub-components ───────────────────────────────────────────────────────────
+// ─── Utilities ────────────────────────────────────────────────────────────────
+
+function fmtScore(score) {
+  if (score === null || score === undefined) return "—";
+  return `${Math.round(score * 100)}%`;
+}
+
+function scoreColor(score) {
+  if (score === null || score === undefined) return "text-gray-400";
+  if (score >= 0.7) return "text-green-600";
+  if (score >= 0.4) return "text-yellow-500";
+  return "text-red-500";
+}
+
+function scoreBg(score) {
+  if (score === null || score === undefined) return "bg-gray-50";
+  if (score >= 0.7) return "bg-green-50";
+  if (score >= 0.4) return "bg-yellow-50";
+  return "bg-red-50";
+}
+
+function fmtRelTime(dateStr) {
+  if (!dateStr) return null;
+  const diff = Math.floor((Date.now() - new Date(dateStr).getTime()) / 1000);
+  if (diff < 60) return "just now";
+  if (diff < 3600) return `${Math.floor(diff / 60)}m ago`;
+  if (diff < 86400) return `${Math.floor(diff / 3600)}h ago`;
+  return new Date(dateStr).toLocaleDateString();
+}
+
+// ─── Shared primitives ────────────────────────────────────────────────────────
 
 function Header({ user, onLogout }) {
   return (
@@ -27,12 +57,20 @@ function Header({ user, onLogout }) {
   );
 }
 
-function SectionCard({ title, children, action }) {
+function SectionCard({ title, children, action, lastUpdated, loading }) {
   return (
     <div className="bg-white rounded-2xl border border-gray-100 shadow-sm p-6">
       <div className="flex items-center justify-between mb-4">
         <h3 className="text-base font-semibold text-gray-900">{title}</h3>
-        {action}
+        <div className="flex items-center gap-3">
+          {lastUpdated && (
+            <span className="text-xs text-gray-400">Updated {fmtRelTime(lastUpdated)}</span>
+          )}
+          {loading && (
+            <span className="w-3 h-3 rounded-full border-2 border-brand-400 border-t-transparent animate-spin inline-block" />
+          )}
+          {action}
+        </div>
       </div>
       {children}
     </div>
@@ -60,7 +98,7 @@ function ErrorMsg({ msg }) {
   return <p className="text-xs text-red-500 mt-1">{msg}</p>;
 }
 
-// ─── Step 1: Create project ───────────────────────────────────────────────────
+// ─── Onboarding steps ─────────────────────────────────────────────────────────
 
 function CreateProjectStep({ onCreated }) {
   const [name, setName] = useState("");
@@ -111,8 +149,6 @@ function CreateProjectStep({ onCreated }) {
     </div>
   );
 }
-
-// ─── Step 2: Brand setup ──────────────────────────────────────────────────────
 
 function BrandSetupStep({ projectId, onComplete }) {
   const [form, setForm] = useState({
@@ -189,7 +225,7 @@ function BrandSetupStep({ projectId, onComplete }) {
   );
 }
 
-// ─── Brand card (editable) ────────────────────────────────────────────────────
+// ─── Brand card ───────────────────────────────────────────────────────────────
 
 function BrandCard({ brand, projectId, onUpdated }) {
   const [editing, setEditing] = useState(false);
@@ -300,7 +336,7 @@ function BrandCard({ brand, projectId, onUpdated }) {
   );
 }
 
-// ─── Competitors ──────────────────────────────────────────────────────────────
+// ─── Competitors card ─────────────────────────────────────────────────────────
 
 function CompetitorsCard({ projectId }) {
   const [competitors, setCompetitors] = useState([]);
@@ -436,7 +472,97 @@ function CompetitorsCard({ projectId }) {
   );
 }
 
-// ─── GEO Results ──────────────────────────────────────────────────────────────
+// ─── Visibility score hero card ───────────────────────────────────────────────
+
+const TREND_ICON = {
+  up: (
+    <svg className="w-5 h-5 text-green-500" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}>
+      <path strokeLinecap="round" strokeLinejoin="round" d="M4.5 19.5l15-15M19.5 4.5H9m10.5 0v10.5" />
+    </svg>
+  ),
+  down: (
+    <svg className="w-5 h-5 text-red-500" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}>
+      <path strokeLinecap="round" strokeLinejoin="round" d="M19.5 4.5l-15 15M4.5 19.5H15M4.5 19.5V9" />
+    </svg>
+  ),
+  stable: (
+    <svg className="w-5 h-5 text-gray-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}>
+      <path strokeLinecap="round" strokeLinejoin="round" d="M5 12h14" />
+    </svg>
+  ),
+};
+
+function VisibilityScoreCard({ stats, loading, onRefresh }) {
+  const score = stats?.overall_visibility;
+  const trend = stats?.trend;
+  const delta = stats?.trend_delta;
+
+  return (
+    <div className="bg-white rounded-2xl border border-gray-100 shadow-sm p-6">
+      <div className="flex items-start justify-between mb-2">
+        <div>
+          <h3 className="text-base font-semibold text-gray-900">Brand Visibility Score</h3>
+          <p className="text-xs text-gray-400 mt-0.5">Average across all AI engine scans</p>
+        </div>
+        <div className="flex items-center gap-2">
+          {stats?.last_updated_at && (
+            <span className="text-xs text-gray-400">Updated {fmtRelTime(stats.last_updated_at)}</span>
+          )}
+          {loading && (
+            <span className="w-3 h-3 rounded-full border-2 border-brand-400 border-t-transparent animate-spin inline-block" />
+          )}
+          <button
+            onClick={onRefresh}
+            disabled={loading}
+            className="text-xs text-gray-400 hover:text-brand-500 transition disabled:opacity-40"
+            title="Refresh"
+          >
+            <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+              <path strokeLinecap="round" strokeLinejoin="round" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+            </svg>
+          </button>
+        </div>
+      </div>
+
+      <div className="flex items-end gap-4 mt-4">
+        <div className={`text-5xl font-bold ${scoreColor(score)}`}>
+          {fmtScore(score)}
+        </div>
+        {trend && (
+          <div className="flex items-center gap-1.5 mb-1">
+            {TREND_ICON[trend]}
+            <span className={`text-sm font-medium ${trend === "up" ? "text-green-600" : trend === "down" ? "text-red-500" : "text-gray-400"}`}>
+              {delta !== null && delta !== undefined
+                ? `${delta > 0 ? "+" : ""}${Math.round(delta * 100)}% vs last 7d`
+                : trend}
+            </span>
+          </div>
+        )}
+      </div>
+
+      <div className="grid grid-cols-3 gap-4 mt-6 pt-4 border-t border-gray-50">
+        <div>
+          <p className="text-xs text-gray-400">Total scans</p>
+          <p className="text-lg font-semibold text-gray-800 mt-0.5">{stats?.total_scans ?? "—"}</p>
+        </div>
+        <div>
+          <p className="text-xs text-gray-400">Citations</p>
+          <p className="text-lg font-semibold text-gray-800 mt-0.5">{stats?.citation_summary?.total ?? "—"}</p>
+        </div>
+        <div>
+          <p className="text-xs text-gray-400">Brand cited</p>
+          <p className="text-lg font-semibold text-gray-800 mt-0.5">
+            {stats?.citation_summary?.brand_citation_rate !== null && stats?.citation_summary?.brand_citation_rate !== undefined
+              ? `${Math.round(stats.citation_summary.brand_citation_rate * 100)}%`
+              : "—"}
+          </p>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ─── Engine breakdown card ────────────────────────────────────────────────────
 
 const ENGINE_LABELS = {
   chatgpt: "ChatGPT",
@@ -445,20 +571,140 @@ const ENGINE_LABELS = {
   google_ai_overviews: "Google AI Overviews",
 };
 
+function EngineBreakdownCard({ stats }) {
+  const byEngine = stats?.by_engine ?? {};
+  const entries = Object.entries(byEngine);
+
+  return (
+    <SectionCard title="By AI Engine">
+      {entries.length === 0 ? (
+        <p className="text-sm text-gray-400">No scan data yet.</p>
+      ) : (
+        <div className="space-y-3">
+          {entries.map(([engine, engineStats]) => {
+            const score = engineStats.avg_score;
+            const pct = score !== null ? Math.round(score * 100) : null;
+            const mentionRate = engineStats.scan_count > 0
+              ? engineStats.brand_mentioned_count / engineStats.scan_count
+              : 0;
+
+            return (
+              <div key={engine} className="flex items-center gap-4">
+                <div className="w-36 shrink-0">
+                  <p className="text-sm font-medium text-gray-700 truncate">
+                    {ENGINE_LABELS[engine] || engine}
+                  </p>
+                  <p className="text-xs text-gray-400">{engineStats.scan_count} scans</p>
+                </div>
+                <div className="flex-1">
+                  <div className="h-2 bg-gray-100 rounded-full overflow-hidden">
+                    <div
+                      className={`h-2 rounded-full transition-all ${
+                        pct === null ? "bg-gray-200" : pct >= 70 ? "bg-green-400" : pct >= 40 ? "bg-yellow-400" : "bg-red-400"
+                      }`}
+                      style={{ width: pct !== null ? `${pct}%` : "0%" }}
+                    />
+                  </div>
+                  <p className="text-xs text-gray-400 mt-0.5">
+                    {Math.round(mentionRate * 100)}% brand mentioned
+                  </p>
+                </div>
+                <div className={`text-sm font-bold w-12 text-right shrink-0 ${scoreColor(score)}`}>
+                  {fmtScore(score)}
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </SectionCard>
+  );
+}
+
+// ─── Competitor gap card ──────────────────────────────────────────────────────
+
+function CompetitorGapCard({ stats }) {
+  const gaps = stats?.competitor_gap ?? [];
+
+  return (
+    <SectionCard title="Competitor Gap Analysis">
+      {gaps.length === 0 ? (
+        <p className="text-sm text-gray-400">
+          Add competitors to see how often they appear alongside your brand in AI results.
+        </p>
+      ) : (
+        <div className="space-y-4">
+          <p className="text-xs text-gray-400">
+            How often each competitor is cited in AI responses where your brand was also scanned.
+          </p>
+          {gaps.map((gap) => (
+            <div key={gap.website_url} className="flex items-center gap-4">
+              <div className="w-36 shrink-0">
+                <p className="text-sm font-medium text-gray-700 truncate">{gap.name}</p>
+                <a
+                  href={gap.website_url}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="text-xs text-gray-400 hover:text-brand-500 truncate block"
+                >
+                  {gap.website_url.replace(/^https?:\/\/(www\.)?/, "")}
+                </a>
+              </div>
+              <div className="flex-1">
+                <div className="flex gap-1 items-center">
+                  <span className="text-xs text-gray-500 w-24">Cited</span>
+                  <span className="text-sm font-semibold text-gray-800">{gap.citation_count}</span>
+                  <span className="text-xs text-gray-400 ml-1">times</span>
+                </div>
+                <div className="flex gap-1 items-center mt-0.5">
+                  <span className="text-xs text-gray-500 w-24">+ Your brand</span>
+                  <span className={`text-sm font-semibold ${gap.brand_citation_count > 0 ? "text-green-600" : "text-gray-400"}`}>
+                    {gap.brand_citation_count}
+                  </span>
+                  <span className="text-xs text-gray-400 ml-1">co-mentions</span>
+                </div>
+              </div>
+              <div
+                className={`shrink-0 px-2.5 py-1 rounded-full text-xs font-medium ${
+                  gap.citation_count === 0
+                    ? "bg-gray-100 text-gray-400"
+                    : gap.brand_citation_count >= gap.citation_count / 2
+                    ? "bg-green-50 text-green-700"
+                    : "bg-orange-50 text-orange-600"
+                }`}
+              >
+                {gap.citation_count === 0
+                  ? "No data"
+                  : gap.brand_citation_count >= gap.citation_count / 2
+                  ? "Competing well"
+                  : "Gap detected"}
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+    </SectionCard>
+  );
+}
+
+// ─── GEO scan + results card ──────────────────────────────────────────────────
+
 const ENGINE_OPTIONS = Object.entries(ENGINE_LABELS);
 
-function GEOResultsCard({ projectId }) {
+function GEOResultsCard({ projectId, onScanComplete }) {
   const [results, setResults] = useState([]);
   const [loading, setLoading] = useState(true);
   const [scanning, setScanning] = useState(false);
   const [scanForm, setScanForm] = useState({ prompt_text: "", engine: "chatgpt" });
   const [scanError, setScanError] = useState("");
   const [scanQueued, setScanQueued] = useState(false);
+  const lastFetchRef = useRef(null);
 
   const fetchResults = useCallback(async () => {
     try {
       const { data } = await api.get(`/api/projects/${projectId}/prompt-results/`);
       setResults(data);
+      lastFetchRef.current = new Date().toISOString();
     } catch {
       // silently fail
     } finally {
@@ -467,6 +713,12 @@ function GEOResultsCard({ projectId }) {
   }, [projectId]);
 
   useEffect(() => { fetchResults(); }, [fetchResults]);
+
+  // Auto-refresh every 30s
+  useEffect(() => {
+    const id = setInterval(fetchResults, 30000);
+    return () => clearInterval(id);
+  }, [fetchResults]);
 
   async function handleScan(e) {
     e.preventDefault();
@@ -478,6 +730,7 @@ function GEOResultsCard({ projectId }) {
       await api.post(`/api/projects/${projectId}/prompt-results/run`, scanForm);
       setScanQueued(true);
       setScanForm((f) => ({ ...f, prompt_text: "" }));
+      if (onScanComplete) onScanComplete();
     } catch (err) {
       setScanError(err.response?.data?.detail || "Failed to enqueue scan");
     } finally {
@@ -485,16 +738,24 @@ function GEOResultsCard({ projectId }) {
     }
   }
 
-  function scoreColor(score) {
-    if (score === null || score === undefined) return "text-gray-400";
-    if (score >= 0.7) return "text-green-600";
-    if (score >= 0.4) return "text-yellow-600";
-    return "text-red-500";
-  }
-
   return (
-    <SectionCard title="GEO Results">
-      {/* Scan trigger */}
+    <SectionCard
+      title="GEO Scans"
+      lastUpdated={lastFetchRef.current}
+      loading={loading}
+      action={
+        <button
+          onClick={fetchResults}
+          disabled={loading}
+          className="text-xs text-gray-400 hover:text-brand-500 transition disabled:opacity-40"
+          title="Refresh"
+        >
+          <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+            <path strokeLinecap="round" strokeLinejoin="round" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+          </svg>
+        </button>
+      }
+    >
       <form onSubmit={handleScan} className="flex gap-2 mb-5">
         <input
           type="text"
@@ -523,12 +784,11 @@ function GEOResultsCard({ projectId }) {
       {scanError && <ErrorMsg msg={scanError} />}
       {scanQueued && (
         <p className="text-xs text-green-600 mb-4">
-          Scan queued — results will appear below once the worker finishes.
+          Scan queued — results will appear below once the worker finishes. Page auto-refreshes every 30s.
         </p>
       )}
 
-      {/* Results feed */}
-      {loading ? (
+      {loading && results.length === 0 ? (
         <p className="text-sm text-gray-400">Loading results…</p>
       ) : results.length === 0 ? (
         <p className="text-sm text-gray-400">No scans yet. Run your first scan above.</p>
@@ -551,11 +811,9 @@ function GEOResultsCard({ projectId }) {
                     </span>
                   </div>
                 </div>
-                <div className="text-right shrink-0">
+                <div className={`text-right shrink-0 px-3 py-2 rounded-xl ${scoreBg(r.visibility_score)}`}>
                   <p className={`text-lg font-bold ${scoreColor(r.visibility_score)}`}>
-                    {r.visibility_score !== null && r.visibility_score !== undefined
-                      ? `${Math.round(r.visibility_score * 100)}%`
-                      : "—"}
+                    {fmtScore(r.visibility_score)}
                   </p>
                   <p className="text-xs text-gray-400">visibility</p>
                 </div>
@@ -596,7 +854,21 @@ export default function Dashboard() {
 
   const [project, setProject] = useState(null);
   const [brand, setBrand] = useState(null);
-  const [step, setStep] = useState("loading"); // loading | create_project | setup_brand | ready
+  const [step, setStep] = useState("loading");
+  const [stats, setStats] = useState(null);
+  const [statsLoading, setStatsLoading] = useState(false);
+
+  const fetchStats = useCallback(async (projectId) => {
+    setStatsLoading(true);
+    try {
+      const { data } = await api.get(`/api/projects/${projectId}/dashboard-stats/`);
+      setStats(data);
+    } catch {
+      // silently fail — stats are non-critical
+    } finally {
+      setStatsLoading(false);
+    }
+  }, []);
 
   useEffect(() => {
     async function bootstrap() {
@@ -612,11 +884,13 @@ export default function Dashboard() {
           const { data: b } = await api.get(`/api/projects/${proj.id}/brand/`);
           setBrand(b);
           setStep("ready");
+          fetchStats(proj.id);
         } catch (err) {
           if (err.response?.status === 404) {
             setStep("setup_brand");
           } else {
             setStep("ready");
+            fetchStats(proj.id);
           }
         }
       } catch {
@@ -624,7 +898,14 @@ export default function Dashboard() {
       }
     }
     bootstrap();
-  }, []);
+  }, [fetchStats]);
+
+  // Auto-refresh stats every 30s when on ready step
+  useEffect(() => {
+    if (step !== "ready" || !project) return;
+    const id = setInterval(() => fetchStats(project.id), 30000);
+    return () => clearInterval(id);
+  }, [step, project, fetchStats]);
 
   function handleLogout() {
     logout();
@@ -639,6 +920,11 @@ export default function Dashboard() {
   function handleBrandSetup(b) {
     setBrand(b);
     setStep("ready");
+    if (project) fetchStats(project.id);
+  }
+
+  function handleScanComplete() {
+    if (project) fetchStats(project.id);
   }
 
   return (
@@ -670,6 +956,23 @@ export default function Dashboard() {
               <h2 className="text-2xl font-semibold text-gray-900">{project.name}</h2>
               <p className="text-sm text-gray-400 mt-0.5">GEO visibility dashboard</p>
             </div>
+
+            {/* Hero: visibility score */}
+            <div className="mb-6">
+              <VisibilityScoreCard
+                stats={stats}
+                loading={statsLoading}
+                onRefresh={() => fetchStats(project.id)}
+              />
+            </div>
+
+            {/* Engine breakdown + competitor gap side-by-side */}
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-6 mb-6">
+              <EngineBreakdownCard stats={stats} />
+              <CompetitorGapCard stats={stats} />
+            </div>
+
+            {/* Config cards */}
             <div className="space-y-6">
               {brand ? (
                 <BrandCard brand={brand} projectId={project.id} onUpdated={setBrand} />
@@ -677,7 +980,7 @@ export default function Dashboard() {
                 <BrandSetupStep projectId={project.id} onComplete={handleBrandSetup} />
               )}
               <CompetitorsCard projectId={project.id} />
-              <GEOResultsCard projectId={project.id} />
+              <GEOResultsCard projectId={project.id} onScanComplete={handleScanComplete} />
             </div>
           </>
         )}

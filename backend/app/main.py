@@ -10,7 +10,7 @@ from slowapi.middleware import SlowAPIMiddleware
 from app.core.config import settings
 from app.core.database import engine, Base
 from app.core.redis import close_redis
-from app.routers import auth, projects, brands, competitors, prompt_results
+from app.routers import auth, projects, brands, competitors, prompt_results, dashboard
 
 limiter = Limiter(key_func=get_remote_address)
 
@@ -60,6 +60,7 @@ app.include_router(projects.router)
 app.include_router(brands.router)
 app.include_router(competitors.router)
 app.include_router(prompt_results.router)
+app.include_router(dashboard.router)
 
 
 @app.get("/")
