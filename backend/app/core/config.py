@@ -60,6 +60,20 @@ class Settings(BaseSettings):
     serp_api_key: str = ""
     valueserp_api_key: str = ""
 
+    # OpenAI
+    openai_api_key: str = ""
+    openai_model: str = "gpt-4o-mini"
+
+    # Perplexity
+    perplexity_api_key: str = ""
+
+    # Google Gemini
+    gemini_api_key: str = ""
+
+    # Cost monitoring + alerting
+    daily_cost_alert_threshold_usd: float = 5.0
+    cost_alert_email: str = ""
+
 
 @lru_cache
 def get_settings() -> Settings:

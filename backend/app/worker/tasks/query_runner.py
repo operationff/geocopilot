@@ -75,7 +75,7 @@ def run_queries_for_project(self, project_id: str):
             return {"status": "no_brand"}
         prompt = f"What are the best solutions for {brand.products_services or brand.description or brand.name}?"
         dispatched = 0
-        for engine in [AIEngine.google_ai_overviews, AIEngine.chatgpt]:
+        for engine in [AIEngine.google_ai_overviews, AIEngine.chatgpt, AIEngine.perplexity]:
             run_project_query.delay(project_id, prompt, engine.value)
             dispatched += 1
         return {"status": "queries_dispatched", "count": dispatched}
@@ -100,7 +100,7 @@ def run_scheduled_queries(self):
             if not brand:
                 continue
             prompt = f"What are the best solutions for {brand.products_services or brand.description or brand.name}?"
-            for engine in [AIEngine.google_ai_overviews, AIEngine.chatgpt]:
+            for engine in [AIEngine.google_ai_overviews, AIEngine.chatgpt, AIEngine.perplexity]:
                 run_project_query.delay(str(project.id), prompt, engine.value)
                 dispatched += 1
         return {"status": "scheduled_queries_dispatched", "count": dispatched}
@@ -126,31 +126,59 @@ def run_project_query(self, project_id: str, prompt_text: str, engine: str):
         brand_domain = _extract_domain(brand.website_url) if brand else ""
         competitor_domains = {_extract_domain(c.website_url) for c in competitors}
 
-        serp_data = _serp_search(prompt_text)
+        engine_enum = AIEngine(engine)
+        organic: list = []
+        metadata: dict = {}
 
-        organic = serp_data.get("organic_results", [])
-        ai_overview = serp_data.get("ai_overview", {})
-        raw_response = ai_overview.get("text_blocks_combined", "") if ai_overview else ""
+        if engine_enum == AIEngine.chatgpt:
+            from app.services.ai_adapters.chatgpt import ChatGPTAdapter
+            adapter = ChatGPTAdapter(
+                api_key=settings.openai_api_key,
+                model=settings.openai_model,
+            )
+            result = adapter.query(prompt_text, brand.name if brand else "")
+            raw_response = result.raw_response
+            brand_mentioned = result.brand_mentioned
+            mention_position = result.mention_position
+            visibility_score = 1.0 if brand_mentioned else 0.0
+            metadata = {"mention_context": result.mention_context}
+        elif engine_enum == AIEngine.perplexity:
+            from app.services.ai_adapters.perplexity import PerplexityAdapter
+            adapter = PerplexityAdapter(
+                api_key=settings.perplexity_api_key,
+            )
+            result = adapter.query(prompt_text, brand.name if brand else "")
+            raw_response = result.raw_response
+            brand_mentioned = result.brand_mentioned
+            mention_position = result.mention_position
+            visibility_score = 1.0 if brand_mentioned else 0.0
+            metadata = {"mention_context": result.mention_context}
+        else:
+            serp_data = _serp_search(prompt_text)
+            organic = serp_data.get("organic_results", [])
+            ai_overview = serp_data.get("ai_overview", {})
+            raw_response = ai_overview.get("text_blocks_combined", "") if ai_overview else ""
 
-        brand_mentioned, mention_position = _detect_brand_mention(
-            raw_response, brand.name if brand else ""
-        )
+            brand_mentioned, mention_position = _detect_brand_mention(
+                raw_response, brand.name if brand else ""
+            )
 
-        total = len(organic)
-        brand_hits = sum(
-            1 for r in organic if brand_domain and brand_domain in _extract_domain(r.get("link", ""))
-        )
-        visibility_score = round(brand_hits / total, 4) if total > 0 else 0.0
+            total = len(organic)
+            brand_hits = sum(
+                1 for r in organic if brand_domain and brand_domain in _extract_domain(r.get("link", ""))
+            )
+            visibility_score = round(brand_hits / total, 4) if total > 0 else 0.0
+            metadata = {"serp_total_results": total}
 
         prompt_result = PromptResult(
             project_id=pid,
             prompt_text=prompt_text,
-            engine=AIEngine(engine),
+            engine=engine_enum,
             raw_response=raw_response or None,
             brand_mentioned=brand_mentioned,
             mention_position=mention_position,
             visibility_score=visibility_score,
-            metadata_={"serp_total_results": total},
+            metadata_=metadata,
         )
         db.add(prompt_result)
         db.flush()
