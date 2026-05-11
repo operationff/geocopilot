@@ -32,6 +32,33 @@ async def send_password_reset_email(email: str, token: str) -> bool:
     return await _send_email(to_email=email, subject="Reset your GEOCopilot password", html=body)
 
 
+async def send_quota_warning_email(
+    email: str,
+    name: str,
+    used: int,
+    limit: int,
+    plan: str,
+    cost_usd: float,
+) -> bool:
+    pct = int(used / limit * 100)
+    remaining = limit - used
+    body = f"""
+    <h2>GEOCopilot — query quota alert</h2>
+    <p>Hi {name},</p>
+    <p>You've used <strong>{used} of {limit} queries</strong> ({pct}%) on your
+    <strong>{plan}</strong> plan this month.</p>
+    <p>You have <strong>{remaining} queries remaining</strong>.
+    Once your quota is exhausted, queries will be paused until next month.</p>
+    <p>Total AI API cost incurred this month: <strong>${cost_usd:.4f}</strong>.</p>
+    <p>Consider upgrading your plan for higher limits.</p>
+    """
+    return await _send_email(
+        to_email=email,
+        subject=f"[GEOCopilot] You've used {pct}% of your monthly query quota",
+        html=body,
+    )
+
+
 async def _send_email(to_email: str, subject: str, html: str) -> bool:
     if not settings.sendgrid_api_key:
         logger.warning(f"SendGrid not configured — skipping email to {to_email}: {subject}")
