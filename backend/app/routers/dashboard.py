@@ -1,6 +1,6 @@
 import json
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone, timedelta
 from urllib.parse import urlparse
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -19,6 +19,8 @@ from app.models.competitor import Competitor
 from app.services.visibility import compute_dashboard_stats
 
 router = APIRouter(prefix="/api/projects/{project_id}", tags=["dashboard"])
+
+_STALE_HOURS = 25
 
 _CACHE_TTL = 300  # seconds
 
@@ -72,6 +74,13 @@ class DashboardResponse(BaseModel):
     by_prompt: list[PromptStats]
     competitor_gap: list[CompetitorGap]
     citations: list[CitationEntry]
+
+
+class DashboardStatusResponse(BaseModel):
+    last_run_at: datetime | None
+    next_run_at: datetime | None
+    is_running: bool
+    is_stale: bool
 
 
 # ── Auth helper ───────────────────────────────────────────────────────────────
@@ -240,3 +249,57 @@ async def get_dashboard(
     await redis.set(cache_key, json.dumps(payload), ex=_CACHE_TTL)
 
     return DashboardResponse.model_validate(payload)
+
+
+@router.get("/dashboard/status", response_model=DashboardStatusResponse)
+async def get_dashboard_status(
+    project_id: uuid.UUID,
+    current_user: User = Depends(get_verified_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Last run time, running state, and stale indicator for a project's data."""
+    await _get_project(project_id, current_user, db)
+
+    result = await db.execute(
+        select(func.max(PromptResult.queried_at)).where(PromptResult.project_id == project_id)
+    )
+    last_run_at = result.scalar_one_or_none()
+
+    redis = await get_redis()
+    running_val = await redis.get(f"job:running:{project_id}")
+    is_running = running_val is not None and int(running_val) > 0
+
+    now = datetime.now(timezone.utc)
+    is_stale = last_run_at is None or (now - last_run_at).total_seconds() > _STALE_HOURS * 3600
+    next_run_at = (last_run_at + timedelta(hours=24)) if last_run_at else None
+
+    return DashboardStatusResponse(
+        last_run_at=last_run_at,
+        next_run_at=next_run_at,
+        is_running=is_running,
+        is_stale=is_stale,
+    )
+
+
+@router.post("/dashboard/refresh", status_code=202)
+async def trigger_dashboard_refresh(
+    project_id: uuid.UUID,
+    current_user: User = Depends(get_verified_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Trigger an on-demand query run. Throttled to once per hour per user per project."""
+    await _get_project(project_id, current_user, db)
+
+    redis = await get_redis()
+    throttle_key = f"refresh:throttle:{project_id}:{current_user.id}"
+    if await redis.exists(throttle_key):
+        raise HTTPException(status_code=429, detail="Refresh throttled: once per hour per project")
+
+    # Mark as running (3 queries will be dispatched; TTL guards against stuck state)
+    await redis.set(f"job:running:{project_id}", "3", ex=300)
+    await redis.set(throttle_key, "1", ex=3600)
+
+    from app.worker.tasks.query_runner import run_queries_for_project
+    run_queries_for_project.delay(str(project_id))
+
+    return {"status": "queued"}

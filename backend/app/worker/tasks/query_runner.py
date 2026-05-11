@@ -152,11 +152,14 @@ def run_project_query(self, project_id: str, prompt_text: str, engine: str):
         db.commit()
         logger.info(f"Stored result {prompt_result.id} for project={project_id} engine={engine}")
 
-        # Invalidate dashboard cache so the next GET recomputes fresh stats
+        # Invalidate dashboard cache and decrement running counter
         try:
             import redis as _redis_sync
             r = _redis_sync.from_url(settings.redis_url, decode_responses=True)
             r.delete(f"dashboard:{project_id}")
+            remaining = r.decr(f"job:running:{project_id}")
+            if remaining <= 0:
+                r.delete(f"job:running:{project_id}")
         except Exception as cache_err:
             logger.warning(f"Cache invalidation failed for project={project_id}: {cache_err}")
 
@@ -168,9 +171,26 @@ def run_project_query(self, project_id: str, prompt_text: str, engine: str):
         }
 
     except QuotaExceededError:
+        try:
+            import redis as _redis_sync
+            r = _redis_sync.from_url(settings.redis_url, decode_responses=True)
+            remaining = r.decr(f"job:running:{project_id}")
+            if remaining <= 0:
+                r.delete(f"job:running:{project_id}")
+        except Exception:
+            pass
         raise
     except Exception as exc:
         logger.error(f"Query failed project={project_id} engine={engine}: {exc}")
+        if self.request.retries >= self.max_retries:
+            try:
+                import redis as _redis_sync
+                r = _redis_sync.from_url(settings.redis_url, decode_responses=True)
+                remaining = r.decr(f"job:running:{project_id}")
+                if remaining <= 0:
+                    r.delete(f"job:running:{project_id}")
+            except Exception:
+                pass
         raise self.retry(exc=exc, countdown=60)
     finally:
         db.close()

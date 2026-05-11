@@ -937,6 +937,47 @@ function GEOResultsCard({ projectId, onScanComplete }) {
   );
 }
 
+// ─── Data freshness banner ────────────────────────────────────────────────────
+
+function DataFreshnessBanner({ status, onRefresh, refreshing }) {
+  if (!status) return null;
+  const { is_running, is_stale, last_run_at } = status;
+
+  if (is_running) {
+    return (
+      <div className="flex items-center gap-2 bg-blue-50 border border-blue-100 rounded-xl px-4 py-3 mb-6 text-sm text-blue-700">
+        <span className="w-3 h-3 rounded-full border-2 border-blue-400 border-t-transparent animate-spin inline-block shrink-0" />
+        <span>AI scans are running — data will update shortly.</span>
+      </div>
+    );
+  }
+
+  if (is_stale) {
+    return (
+      <div className="flex items-center justify-between bg-amber-50 border border-amber-200 rounded-xl px-4 py-3 mb-6">
+        <div className="flex items-center gap-2 text-sm text-amber-800">
+          <svg className="w-4 h-4 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+            <path strokeLinecap="round" strokeLinejoin="round" d="M12 9v3.75m-9.303 3.376c-.866 1.5.217 3.374 1.948 3.374h14.71c1.73 0 2.813-1.874 1.948-3.374L13.949 3.378c-.866-1.5-3.032-1.5-3.898 0L2.697 16.126zM12 15.75h.007v.008H12v-.008z" />
+          </svg>
+          <span>
+            Data is stale
+            {last_run_at ? ` — last run ${fmtRelTime(last_run_at)}` : " — no runs yet"}.
+          </span>
+        </div>
+        <button
+          onClick={onRefresh}
+          disabled={refreshing}
+          className="text-xs font-medium text-amber-700 hover:text-amber-900 bg-amber-100 hover:bg-amber-200 px-3 py-1.5 rounded-lg transition disabled:opacity-50"
+        >
+          {refreshing ? "Queuing…" : "Refresh now"}
+        </button>
+      </div>
+    );
+  }
+
+  return null;
+}
+
 // ─── Main Dashboard ───────────────────────────────────────────────────────────
 
 export default function Dashboard() {
@@ -948,6 +989,9 @@ export default function Dashboard() {
   const [step, setStep] = useState("loading");
   const [stats, setStats] = useState(null);
   const [statsLoading, setStatsLoading] = useState(false);
+  const [dataStatus, setDataStatus] = useState(null);
+  const [refreshing, setRefreshing] = useState(false);
+  const [refreshError, setRefreshError] = useState("");
 
   const fetchStats = useCallback(async (projectId) => {
     setStatsLoading(true);
@@ -958,6 +1002,15 @@ export default function Dashboard() {
       // silently fail — stats are non-critical
     } finally {
       setStatsLoading(false);
+    }
+  }, []);
+
+  const fetchStatus = useCallback(async (projectId) => {
+    try {
+      const { data } = await api.get(`/api/projects/${projectId}/dashboard/status`);
+      setDataStatus(data);
+    } catch {
+      // silently fail
     }
   }, []);
 
@@ -976,12 +1029,14 @@ export default function Dashboard() {
           setBrand(b);
           setStep("ready");
           fetchStats(proj.id);
+          fetchStatus(proj.id);
         } catch (err) {
           if (err.response?.status === 404) {
             setStep("setup_brand");
           } else {
             setStep("ready");
             fetchStats(proj.id);
+            fetchStatus(proj.id);
           }
         }
       } catch {
@@ -989,7 +1044,24 @@ export default function Dashboard() {
       }
     }
     bootstrap();
-  }, [fetchStats]);
+  }, [fetchStats, fetchStatus]);
+
+  // Poll status: every 10s while running, every 60s otherwise
+  useEffect(() => {
+    if (step !== "ready" || !project) return;
+    const interval = dataStatus?.is_running ? 10000 : 60000;
+    const id = setInterval(() => fetchStatus(project.id), interval);
+    return () => clearInterval(id);
+  }, [step, project, dataStatus?.is_running, fetchStatus]);
+
+  // Re-fetch stats when running flips to false
+  const prevRunning = useRef(null);
+  useEffect(() => {
+    if (prevRunning.current === true && dataStatus?.is_running === false && project) {
+      fetchStats(project.id);
+    }
+    prevRunning.current = dataStatus?.is_running ?? null;
+  }, [dataStatus?.is_running, project, fetchStats]);
 
   // Auto-refresh stats every 30s when on ready step
   useEffect(() => {
@@ -997,6 +1069,24 @@ export default function Dashboard() {
     const id = setInterval(() => fetchStats(project.id), 30000);
     return () => clearInterval(id);
   }, [step, project, fetchStats]);
+
+  async function handleManualRefresh() {
+    if (!project) return;
+    setRefreshing(true);
+    setRefreshError("");
+    try {
+      await api.post(`/api/projects/${project.id}/dashboard/refresh`);
+      await fetchStatus(project.id);
+    } catch (err) {
+      if (err.response?.status === 429) {
+        setRefreshError("Refresh is throttled — once per hour. Try again later.");
+      } else {
+        setRefreshError("Failed to trigger refresh.");
+      }
+    } finally {
+      setRefreshing(false);
+    }
+  }
 
   function handleLogout() {
     logout();
@@ -1011,7 +1101,10 @@ export default function Dashboard() {
   function handleBrandSetup(b) {
     setBrand(b);
     setStep("ready");
-    if (project) fetchStats(project.id);
+    if (project) {
+      fetchStats(project.id);
+      fetchStatus(project.id);
+    }
   }
 
   function handleScanComplete() {
@@ -1043,16 +1136,45 @@ export default function Dashboard() {
 
         {step === "ready" && project && (
           <>
-            <div className="mb-8">
-              <h2 className="text-2xl font-semibold text-gray-900">{project.name}</h2>
-              <p className="text-sm text-gray-400 mt-0.5">GEO visibility dashboard</p>
+            <div className="flex items-start justify-between mb-8">
+              <div>
+                <h2 className="text-2xl font-semibold text-gray-900">{project.name}</h2>
+                <p className="text-sm text-gray-400 mt-0.5">GEO visibility dashboard</p>
+              </div>
+              <div className="flex flex-col items-end gap-1">
+                <button
+                  onClick={handleManualRefresh}
+                  disabled={refreshing || dataStatus?.is_running}
+                  className="flex items-center gap-1.5 text-xs text-gray-500 hover:text-brand-500 bg-white border border-gray-200 rounded-lg px-3 py-1.5 transition disabled:opacity-40"
+                  title="Trigger a fresh AI scan run"
+                >
+                  <svg className={`w-3.5 h-3.5 ${refreshing ? "animate-spin" : ""}`} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                    <path strokeLinecap="round" strokeLinejoin="round" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+                  </svg>
+                  {refreshing ? "Queuing…" : "Refresh data"}
+                </button>
+                {dataStatus?.last_run_at && (
+                  <span className="text-xs text-gray-400">
+                    Last run {fmtRelTime(dataStatus.last_run_at)}
+                  </span>
+                )}
+                {refreshError && (
+                  <span className="text-xs text-red-500">{refreshError}</span>
+                )}
+              </div>
             </div>
+
+            <DataFreshnessBanner
+              status={dataStatus}
+              onRefresh={handleManualRefresh}
+              refreshing={refreshing}
+            />
 
             {/* Hero: visibility score */}
             <div className="mb-6">
               <VisibilityScoreCard
                 stats={stats}
-                loading={statsLoading}
+                loading={statsLoading || dataStatus?.is_running}
                 onRefresh={() => fetchStats(project.id)}
               />
             </div>
