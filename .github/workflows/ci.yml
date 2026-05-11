@@ -105,8 +105,20 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Deploy backend to staging
-        run: echo "TODO — wire to VPS deploy script or Render/Railway"
+      - name: Install Railway CLI
+        run: npm install -g @railway/cli
 
-      - name: Deploy frontend to staging
-        run: echo "TODO — wire to CDN deploy or Vercel staging"
+      - name: Deploy backend to Railway
+        env:
+          RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
+        run: railway up --service backend --detach
+
+      - name: Run migrations on Railway
+        env:
+          RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
+        run: railway run --service backend alembic upgrade head
+
+      - name: Deploy frontend to Railway
+        env:
+          RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
+        run: railway up --service frontend --detach
