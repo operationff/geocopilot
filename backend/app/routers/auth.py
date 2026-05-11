@@ -9,13 +9,17 @@ from app.core.security import (
     hash_password, verify_password,
     create_access_token, create_refresh_token,
     decode_token, generate_verification_token,
+    store_refresh_jti, revoke_refresh_jti, is_refresh_jti_valid,
 )
 from app.core.config import settings
 from app.core.deps import get_current_user
+from app.core.redis import get_redis
 from app.models.user import User
 from app.services.email import send_verification_email
 
 router = APIRouter(prefix="/api/auth", tags=["auth"])
+
+_OAUTH_STATE_TTL = 600  # 10 minutes
 
 
 class SignupRequest(BaseModel):
@@ -39,6 +43,10 @@ class RefreshRequest(BaseModel):
     refresh_token: str
 
 
+class LogoutRequest(BaseModel):
+    refresh_token: str
+
+
 @router.post("/signup", response_model=TokenResponse, status_code=status.HTTP_201_CREATED)
 async def signup(payload: SignupRequest, db: AsyncSession = Depends(get_db)):
     result = await db.execute(select(User).where(User.email == payload.email))
@@ -58,9 +66,11 @@ async def signup(payload: SignupRequest, db: AsyncSession = Depends(get_db)):
 
     await send_verification_email(user.email, user.full_name, verification_token)
 
+    refresh_token, jti = create_refresh_token(user.id)
+    await store_refresh_jti(jti)
     return TokenResponse(
         access_token=create_access_token(user.id),
-        refresh_token=create_refresh_token(user.id),
+        refresh_token=refresh_token,
     )
 
 
@@ -75,9 +85,11 @@ async def login(payload: LoginRequest, db: AsyncSession = Depends(get_db)):
     if not user.is_active:
         raise HTTPException(status_code=403, detail="Account disabled")
 
+    refresh_token, jti = create_refresh_token(user.id)
+    await store_refresh_jti(jti)
     return TokenResponse(
         access_token=create_access_token(user.id),
-        refresh_token=create_refresh_token(user.id),
+        refresh_token=refresh_token,
     )
 
 
@@ -100,11 +112,29 @@ async def refresh_token(payload: RefreshRequest):
     if not data or data.get("type") != "refresh":
         raise HTTPException(status_code=401, detail="Invalid refresh token")
 
+    jti = data.get("jti")
+    if not jti or not await is_refresh_jti_valid(jti):
+        raise HTTPException(status_code=401, detail="Refresh token has been revoked")
+
+    # Rotate: revoke old token, issue new one
+    await revoke_refresh_jti(jti)
+
     user_id = data.get("sub")
+    new_refresh_token, new_jti = create_refresh_token(user_id)
+    await store_refresh_jti(new_jti)
     return TokenResponse(
         access_token=create_access_token(user_id),
-        refresh_token=create_refresh_token(user_id),
+        refresh_token=new_refresh_token,
     )
+
+
+@router.post("/logout", status_code=status.HTTP_204_NO_CONTENT)
+async def logout(payload: LogoutRequest):
+    data = decode_token(payload.refresh_token)
+    if data and data.get("type") == "refresh":
+        jti = data.get("jti")
+        if jti:
+            await revoke_refresh_jti(jti)
 
 
 @router.get("/google")
@@ -119,11 +149,19 @@ async def google_login():
         scope="openid email profile",
         access_type="offline",
     )
+    r = await get_redis()
+    await r.setex(f"oauth_state:{state}", _OAUTH_STATE_TTL, "1")
     return {"authorization_url": uri, "state": state}
 
 
 @router.get("/google/callback", response_model=TokenResponse)
-async def google_callback(code: str, db: AsyncSession = Depends(get_db)):
+async def google_callback(code: str, state: str, db: AsyncSession = Depends(get_db)):
+    r = await get_redis()
+    state_key = f"oauth_state:{state}"
+    if not await r.exists(state_key):
+        raise HTTPException(status_code=400, detail="Invalid or expired OAuth state")
+    await r.delete(state_key)
+
     client = AsyncOAuth2Client(
         client_id=settings.google_client_id,
         client_secret=settings.google_client_secret,
@@ -165,9 +203,11 @@ async def google_callback(code: str, db: AsyncSession = Depends(get_db)):
     await db.commit()
     await db.refresh(user)
 
+    refresh_token, jti = create_refresh_token(user.id)
+    await store_refresh_jti(jti)
     return TokenResponse(
         access_token=create_access_token(user.id),
-        refresh_token=create_refresh_token(user.id),
+        refresh_token=refresh_token,
     )
 
 

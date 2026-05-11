@@ -2,6 +2,8 @@ from pydantic import model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from functools import lru_cache
 
+_PLACEHOLDER_KEY = "change-me-in-production"
+
 
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", env_ignore_empty=True)
@@ -27,10 +29,18 @@ class Settings(BaseSettings):
     celery_result_backend: str = "redis://localhost:6379/2"
 
     # JWT
-    secret_key: str = "change-me-in-production"
+    secret_key: str = _PLACEHOLDER_KEY
     jwt_algorithm: str = "HS256"
     access_token_expire_minutes: int = 60
     refresh_token_expire_days: int = 30
+
+    @model_validator(mode="after")
+    def enforce_secret_key(self) -> "Settings":
+        if self.environment != "development" and self.secret_key == _PLACEHOLDER_KEY:
+            raise ValueError(
+                "SECRET_KEY must be set to a secure value via env var in non-development environments"
+            )
+        return self
 
     # Google OAuth
     google_client_id: str = ""
