@@ -81,8 +81,13 @@ def upgrade() -> None:
     )
     op.create_index("ix_competitors_project_id", "competitors", ["project_id"])
 
-    # Create prompt_type enum (with IF NOT EXISTS to handle idempotency)
-    op.execute("CREATE TYPE IF NOT EXISTS prompt_type_enum AS ENUM ('swot', 'market_analysis', 'competitor_analysis')")
+    # Create prompt_type enum (with conditional check for idempotency)
+    op.execute("""
+        DO $$ BEGIN
+            CREATE TYPE prompt_type_enum AS ENUM ('swot', 'market_analysis', 'competitor_analysis');
+        EXCEPTION WHEN duplicate_object THEN null;
+        END $$;
+    """)
 
     # Create prompt_results table
     op.create_table(
