@@ -81,8 +81,8 @@ def upgrade() -> None:
     )
     op.create_index("ix_competitors_project_id", "competitors", ["project_id"])
 
-    # Create prompt_type enum
-    op.execute("CREATE TYPE prompt_type_enum AS ENUM ('swot', 'market_analysis', 'competitor_analysis')")
+    # Create prompt_type enum (with IF NOT EXISTS to handle idempotency)
+    op.execute("CREATE TYPE IF NOT EXISTS prompt_type_enum AS ENUM ('swot', 'market_analysis', 'competitor_analysis')")
 
     # Create prompt_results table
     op.create_table(
@@ -121,7 +121,7 @@ def downgrade() -> None:
     op.drop_table("citations")
     op.drop_index("ix_prompt_results_project_id", table_name="prompt_results")
     op.drop_table("prompt_results")
-    op.execute("DROP TYPE prompt_type_enum")
+    op.execute("DROP TYPE IF EXISTS prompt_type_enum")
     op.drop_index("ix_competitors_project_id", table_name="competitors")
     op.drop_table("competitors")
     op.drop_index("ix_brands_project_id", table_name="brands")
