@@ -1,3 +1,4 @@
+from pydantic import model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from functools import lru_cache
 
@@ -12,6 +13,13 @@ class Settings(BaseSettings):
     # Database
     database_url: str = "postgresql+asyncpg://postgres:postgres@localhost:5432/geocopilot"
     database_url_sync: str = "postgresql://postgres:postgres@localhost:5432/geocopilot"
+
+    @model_validator(mode="after")
+    def fix_database_urls(self) -> "Settings":
+        # Railway provides DATABASE_URL as postgresql:// but async engine needs postgresql+asyncpg://
+        if self.database_url.startswith("postgresql://"):
+            self.database_url = self.database_url.replace("postgresql://", "postgresql+asyncpg://", 1)
+        return self
 
     # Redis / Celery
     redis_url: str = "redis://localhost:6379/0"
