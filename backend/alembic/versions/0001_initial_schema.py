@@ -94,7 +94,7 @@ def upgrade() -> None:
         "prompt_results",
         sa.Column("id", sa.UUID(), nullable=False),
         sa.Column("project_id", sa.UUID(), nullable=False),
-        sa.Column("prompt_type", sa.Enum("swot", "market_analysis", "competitor_analysis", name="prompt_type_enum"), nullable=False),
+        sa.Column("prompt_type", sa.String(50), nullable=False),
         sa.Column("result_text", sa.Text(), nullable=False),
         sa.Column("confidence_score", sa.Float(), nullable=True),
         sa.Column("result_metadata", sa.JSON(), nullable=True),

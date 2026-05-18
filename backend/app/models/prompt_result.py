@@ -2,7 +2,7 @@ from __future__ import annotations
 import uuid
 from datetime import datetime
 from typing import TYPE_CHECKING
-from sqlalchemy import Text, ForeignKey, DateTime, func, Enum, Float, JSON
+from sqlalchemy import Text, ForeignKey, DateTime, func, Float, JSON
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from app.core.database import Base
 
@@ -18,7 +18,7 @@ class PromptResult(Base):
     project_id: Mapped[uuid.UUID] = mapped_column(
         ForeignKey("projects.id", ondelete="CASCADE"), nullable=False, index=True
     )
-    prompt_type: Mapped[str] = mapped_column(Enum("swot", "market_analysis", "competitor_analysis", name="prompt_type_enum"), nullable=False)
+    prompt_type: Mapped[str] = mapped_column(String(50), nullable=False)
     result_text: Mapped[str] = mapped_column(Text, nullable=False)
     confidence_score: Mapped[float | None] = mapped_column(Float, nullable=True)
     result_result_metadata: Mapped[dict | None] = mapped_column(JSON, nullable=True)
