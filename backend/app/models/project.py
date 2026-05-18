@@ -1,15 +1,16 @@
+from __future__ import annotations
 import uuid
 from datetime import datetime
-from sqlalchemy import String, Text, ForeignKey, DateTime, func, Enum
+from typing import TYPE_CHECKING
+from sqlalchemy import String, Text, ForeignKey, DateTime, func
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from app.core.database import Base
-import enum
 
-
-class ProjectStatus(str, enum.Enum):
-    active = "active"
-    paused = "paused"
-    archived = "archived"
+if TYPE_CHECKING:
+    from app.models.user import User
+    from app.models.brand import Brand
+    from app.models.competitor import Competitor
+    from app.models.prompt_result import PromptResult
 
 
 class Project(Base):
@@ -21,9 +22,6 @@ class Project(Base):
     )
     name: Mapped[str] = mapped_column(String(255), nullable=False)
     description: Mapped[str | None] = mapped_column(Text, nullable=True)
-    status: Mapped[ProjectStatus] = mapped_column(
-        Enum(ProjectStatus), default=ProjectStatus.active, nullable=False
-    )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )

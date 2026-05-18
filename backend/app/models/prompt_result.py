@@ -1,16 +1,14 @@
+from __future__ import annotations
 import uuid
 from datetime import datetime
-from sqlalchemy import String, Text, ForeignKey, DateTime, func, Enum, Float, Integer, JSON
+from typing import TYPE_CHECKING
+from sqlalchemy import Text, ForeignKey, DateTime, func, Enum, Float, JSON
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from app.core.database import Base
-import enum
 
-
-class AIEngine(str, enum.Enum):
-    chatgpt = "chatgpt"
-    perplexity = "perplexity"
-    gemini = "gemini"
-    google_ai_overviews = "google_ai_overviews"
+if TYPE_CHECKING:
+    from app.models.project import Project
+    from app.models.citation import Citation
 
 
 class PromptResult(Base):
@@ -20,18 +18,15 @@ class PromptResult(Base):
     project_id: Mapped[uuid.UUID] = mapped_column(
         ForeignKey("projects.id", ondelete="CASCADE"), nullable=False, index=True
     )
-    prompt_text: Mapped[str] = mapped_column(Text, nullable=False)
-    engine: Mapped[AIEngine] = mapped_column(Enum(AIEngine), nullable=False)
-    raw_response: Mapped[str | None] = mapped_column(Text, nullable=True)
-    brand_mentioned: Mapped[bool | None] = mapped_column(nullable=True)
-    mention_position: Mapped[int | None] = mapped_column(Integer, nullable=True)
-    visibility_score: Mapped[float | None] = mapped_column(Float, nullable=True)
-    metadata_: Mapped[dict | None] = mapped_column("metadata", JSON, nullable=True)
-    queried_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), server_default=func.now()
-    )
+    prompt_type: Mapped[str] = mapped_column(Enum("swot", "market_analysis", "competitor_analysis", name="prompt_type_enum"), nullable=False)
+    result_text: Mapped[str] = mapped_column(Text, nullable=False)
+    confidence_score: Mapped[float | None] = mapped_column(Float, nullable=True)
+    metadata: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
     )
 
     project: Mapped["Project"] = relationship("Project", back_populates="prompt_results")
