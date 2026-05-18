@@ -1,6 +1,4 @@
-import uuid
-from datetime import timedelta
-from fastapi import APIRouter, Depends, HTTPException, status, Request
+from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 from pydantic import BaseModel, EmailStr
@@ -131,7 +129,7 @@ async def google_callback(code: str, db: AsyncSession = Depends(get_db)):
         client_secret=settings.google_client_secret,
         redirect_uri=settings.google_redirect_uri,
     )
-    token = await client.fetch_token(
+    await client.fetch_token(
         "https://oauth2.googleapis.com/token", code=code
     )
     userinfo_resp = await client.get("https://openidconnect.googleapis.com/v1/userinfo")
@@ -182,3 +180,4 @@ async def get_me(current_user: User = Depends(get_current_user)):
         "is_verified": current_user.is_verified,
         "avatar_url": current_user.avatar_url,
     }
+
