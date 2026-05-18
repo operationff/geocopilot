@@ -21,7 +21,7 @@ class PromptResult(Base):
     prompt_type: Mapped[str] = mapped_column(Enum("swot", "market_analysis", "competitor_analysis", name="prompt_type_enum"), nullable=False)
     result_text: Mapped[str] = mapped_column(Text, nullable=False)
     confidence_score: Mapped[float | None] = mapped_column(Float, nullable=True)
-    metadata: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    result_result_metadata: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )
@@ -33,3 +33,4 @@ class PromptResult(Base):
     citations: Mapped[list["Citation"]] = relationship(
         "Citation", back_populates="prompt_result", cascade="all, delete-orphan"
     )
+
