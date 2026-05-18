@@ -61,7 +61,11 @@ async def send_quota_warning_email(
 
 async def _send_email(to_email: str, subject: str, html: str) -> bool:
     if not settings.sendgrid_api_key:
-        logger.warning(f"SendGrid not configured — skipping email to {to_email}: {subject}")
+        # In local dev, log the full email body so verification links are accessible without SendGrid
+        logger.warning(
+            f"SendGrid not configured — email not sent to {to_email} ({subject})\n"
+            f"--- EMAIL BODY ---\n{html}\n--- END EMAIL BODY ---"
+        )
         return True
 
     try:
