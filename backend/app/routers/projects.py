@@ -7,7 +7,7 @@ from pydantic import BaseModel
 from app.core.database import get_db
 from app.core.deps import get_verified_user
 from app.models.user import User
-from app.models.project import Project, ProjectStatus
+from app.models.project import Project
 
 router = APIRouter(prefix="/api/projects", tags=["projects"])
 
@@ -20,14 +20,12 @@ class ProjectCreate(BaseModel):
 class ProjectUpdate(BaseModel):
     name: str | None = None
     description: str | None = None
-    status: ProjectStatus | None = None
 
 
 class ProjectResponse(BaseModel):
     id: uuid.UUID
     name: str
     description: str | None
-    status: ProjectStatus
 
     class Config:
         from_attributes = True
