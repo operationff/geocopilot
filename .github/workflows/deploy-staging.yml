@@ -1,4 +1,4 @@
-name: Deploy to Railway Staging
+name: Deploy to Railway
 
 on:
   push:
@@ -10,7 +10,6 @@ jobs:
   deploy:
     name: Deploy backend to Railway
     runs-on: ubuntu-latest
-    environment: staging
 
     steps:
       - name: Checkout code
@@ -19,9 +18,9 @@ jobs:
       - name: Install Railway CLI
         run: npm install -g @railway/cli
 
-      - name: Deploy to Railway staging
+      - name: Deploy to Railway
         working-directory: backend
-        run: railway up --service geocopilot-backend --environment staging --detach
+        run: railway up --detach
         env:
           RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
 
@@ -29,8 +28,8 @@ jobs:
         run: |
           echo "Waiting 60s for deployment to settle..."
           sleep 60
-          STAGING_URL="${{ secrets.RAILWAY_STAGING_URL }}"
-          STATUS=$(curl -s -o /dev/null -w "%{http_code}" "$STAGING_URL/health")
+          APP_URL="${{ secrets.RAILWAY_APP_URL }}"
+          STATUS=$(curl -s -o /dev/null -w "%{http_code}" "$APP_URL/health")
           if [ "$STATUS" = "200" ]; then
             echo "Health check passed (HTTP $STATUS)"
           else
