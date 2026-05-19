@@ -36,6 +36,16 @@ app.include_router(auth.router)
 app.include_router(projects.router)
 
 
+@app.get("/")
+async def root():
+    return {
+        "message": "GEOCopilot API",
+        "version": "0.1.0",
+        "docs": "/docs",
+        "openapi": "/openapi.json",
+    }
+
+
 @app.get("/health")
 async def health():
     return {"status": "ok", "environment": settings.environment}
